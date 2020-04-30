@@ -71,6 +71,7 @@ rust_library_host_rlib {
         "libshlex",
         "libwhich",
     ],
+    compile_multilib: "first", // added
 }
 
 // dependent_library ["feature_list"]
