@@ -15,36 +15,37 @@ use self::struct_layout::StructLayoutTracker;
 
 use super::BindgenOptions;
 
-use ir::analysis::{HasVtable, Sizedness};
-use ir::annotations::FieldAccessorKind;
-use ir::comment;
-use ir::comp::{
+use crate::ir::analysis::{HasVtable, Sizedness};
+use crate::ir::annotations::FieldAccessorKind;
+use crate::ir::comment;
+use crate::ir::comp::{
     Base, Bitfield, BitfieldUnit, CompInfo, CompKind, Field, FieldData,
     FieldMethods, Method, MethodKind,
 };
-use ir::context::{BindgenContext, ItemId};
-use ir::derive::{
+use crate::ir::context::{BindgenContext, ItemId};
+use crate::ir::derive::{
     CanDerive, CanDeriveCopy, CanDeriveDebug, CanDeriveDefault, CanDeriveEq,
     CanDeriveHash, CanDeriveOrd, CanDerivePartialEq, CanDerivePartialOrd,
 };
-use ir::dot;
-use ir::enum_ty::{Enum, EnumVariant, EnumVariantValue};
-use ir::function::{Abi, Function, FunctionKind, FunctionSig, Linkage};
-use ir::int::IntKind;
-use ir::item::{IsOpaque, Item, ItemCanonicalName, ItemCanonicalPath};
-use ir::item_kind::ItemKind;
-use ir::layout::Layout;
-use ir::module::Module;
-use ir::objc::{ObjCInterface, ObjCMethod};
-use ir::template::{
+use crate::ir::dot;
+use crate::ir::enum_ty::{Enum, EnumVariant, EnumVariantValue};
+use crate::ir::function::{Abi, Function, FunctionKind, FunctionSig, Linkage};
+use crate::ir::int::IntKind;
+use crate::ir::item::{IsOpaque, Item, ItemCanonicalName, ItemCanonicalPath};
+use crate::ir::item_kind::ItemKind;
+use crate::ir::layout::Layout;
+use crate::ir::module::Module;
+use crate::ir::objc::{ObjCInterface, ObjCMethod};
+use crate::ir::template::{
     AsTemplateParam, TemplateInstantiation, TemplateParameters,
 };
-use ir::ty::{Type, TypeKind};
-use ir::var::Var;
+use crate::ir::ty::{Type, TypeKind};
+use crate::ir::var::Var;
 
 use proc_macro2::{self, Ident, Span};
 use quote::TokenStreamExt;
 
+use crate::{Entry, HashMap, HashSet};
 use std;
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -53,7 +54,6 @@ use std::fmt::Write;
 use std::iter;
 use std::ops;
 use std::str::FromStr;
-use {Entry, HashMap, HashSet};
 
 // Name of type defined in constified enum module
 pub static CONSTIFIED_ENUM_MODULE_REPR_NAME: &'static str = "Type";
@@ -483,7 +483,7 @@ impl CodeGenerator for Var {
         result: &mut CodegenResult<'a>,
         item: &Item,
     ) {
-        use ir::var::VarType;
+        use crate::ir::var::VarType;
         debug!("<Var as CodeGenerator>::codegen: item = {:?}", item);
         debug_assert!(item.is_enabled_for_codegen(ctx));
 
@@ -1310,7 +1310,7 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
         F: Extend<proc_macro2::TokenStream>,
         M: Extend<proc_macro2::TokenStream>,
     {
-        use ir::ty::RUST_DERIVE_IN_ARRAY_LIMIT;
+        use crate::ir::ty::RUST_DERIVE_IN_ARRAY_LIMIT;
 
         result.saw_bitfield_unit();
 
@@ -2146,6 +2146,10 @@ impl MethodCodegen for Method {
 
         // First of all, output the actual function.
         let function_item = ctx.resolve_item(self.signature());
+        if function_item.is_blacklisted(ctx) {
+            // We shouldn't emit a method declaration if the function is blacklisted
+            return;
+        }
         function_item.codegen(ctx, result, &());
 
         let function = function_item.expect_function();
@@ -2285,7 +2289,9 @@ impl MethodCodegen for Method {
 /// A helper type that represents different enum variations.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum EnumVariation {
-    /// The code for this enum will use a Rust enum
+    /// The code for this enum will use a Rust enum. Note that creating this in unsafe code
+    /// (including FFI) with an invalid value will invoke undefined behaviour, whether or not
+    /// its marked as non_exhaustive.
     Rust {
         /// Indicates whether the generated struct should be `#[non_exhaustive]`
         non_exhaustive: bool,
@@ -3394,8 +3400,11 @@ impl TryToRustTy for Type {
             TypeKind::ObjCSel => Ok(quote! {
                 objc::runtime::Sel
             }),
-            TypeKind::ObjCId | TypeKind::ObjCInterface(..) => Ok(quote! {
+            TypeKind::ObjCId => Ok(quote! {
                 id
+            }),
+            TypeKind::ObjCInterface(..) => Ok(quote! {
+                objc::runtime::Object
             }),
             ref u @ TypeKind::UnresolvedTypeRef(..) => {
                 unreachable!("Should have been resolved after parsing {:?}!", u)
@@ -3644,7 +3653,7 @@ fn objc_method_codegen(
     method: &ObjCMethod,
     class_name: Option<&str>,
     prefix: &str,
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+) -> proc_macro2::TokenStream {
     let signature = method.signature();
     let fn_args = utils::fnsig_arguments(ctx, signature);
     let fn_ret = utils::fnsig_return_ty(ctx, signature);
@@ -3665,15 +3674,13 @@ fn objc_method_codegen(
     let methods_and_args = method.format_method_call(&fn_args);
 
     let body = if method.is_class_method() {
-        let class_name = class_name
-            .expect("Generating a class method without class name?")
-            .to_owned();
-        let expect_msg = proc_macro2::Literal::string(&format!(
-            "Couldn't find {}",
+        let class_name = ctx.rust_ident(
             class_name
-        ));
+                .expect("Generating a class method without class name?")
+                .to_owned(),
+        );
         quote! {
-            msg_send!(objc::runtime::Class::get(#class_name).expect(#expect_msg), #methods_and_args)
+            msg_send!(class!(#class_name), #methods_and_args)
         }
     } else {
         quote! {
@@ -3684,16 +3691,11 @@ fn objc_method_codegen(
     let method_name =
         ctx.rust_ident(format!("{}{}", prefix, method.rust_name()));
 
-    (
-        quote! {
-            unsafe fn #method_name #sig {
-                #body
-            }
-        },
-        quote! {
-            unsafe fn #method_name #sig ;
-        },
-    )
+    quote! {
+        unsafe fn #method_name #sig where <Self as std::ops::Deref>::Target: objc::Message + Sized {
+            #body
+        }
+    }
 }
 
 impl CodeGenerator for ObjCInterface {
@@ -3708,13 +3710,10 @@ impl CodeGenerator for ObjCInterface {
         debug_assert!(item.is_enabled_for_codegen(ctx));
 
         let mut impl_items = vec![];
-        let mut trait_items = vec![];
 
         for method in self.methods() {
-            let (impl_item, trait_item) =
-                objc_method_codegen(ctx, method, None, "");
+            let impl_item = objc_method_codegen(ctx, method, None, "");
             impl_items.push(impl_item);
-            trait_items.push(trait_item)
         }
 
         let instance_method_names: Vec<_> =
@@ -3724,61 +3723,132 @@ impl CodeGenerator for ObjCInterface {
             let ambiquity =
                 instance_method_names.contains(&class_method.rust_name());
             let prefix = if ambiquity { "class_" } else { "" };
-            let (impl_item, trait_item) = objc_method_codegen(
+            let impl_item = objc_method_codegen(
                 ctx,
                 class_method,
                 Some(self.name()),
                 prefix,
             );
             impl_items.push(impl_item);
-            trait_items.push(trait_item)
         }
 
         let trait_name = ctx.rust_ident(self.rust_name());
-
+        let trait_constraints = quote! {
+            Sized + std::ops::Deref
+        };
         let trait_block = if self.is_template() {
             let template_names: Vec<Ident> = self
                 .template_names
                 .iter()
                 .map(|g| ctx.rust_ident(g))
                 .collect();
+
             quote! {
-                pub trait #trait_name <#(#template_names),*>{
-                    #( #trait_items )*
+                pub trait #trait_name <#(#template_names),*> : #trait_constraints {
+                    #( #impl_items )*
                 }
             }
         } else {
             quote! {
-                pub trait #trait_name {
-                    #( #trait_items )*
+                pub trait #trait_name : #trait_constraints {
+                    #( #impl_items )*
                 }
             }
         };
 
-        let ty_for_impl = quote! {
-            id
-        };
-        let impl_block = if self.is_template() {
-            let template_names: Vec<Ident> = self
-                .template_names
-                .iter()
-                .map(|g| ctx.rust_ident(g))
-                .collect();
-            quote! {
-                impl <#(#template_names :'static),*> #trait_name <#(#template_names),*> for #ty_for_impl {
-                    #( #impl_items )*
+        let class_name = ctx.rust_ident(self.name());
+        if !self.is_category() && !self.is_protocol() {
+            let struct_block = quote! {
+                #[repr(transparent)]
+                #[derive(Clone, Copy)]
+                pub struct #class_name(pub id);
+                impl std::ops::Deref for #class_name {
+                    type Target = objc::runtime::Object;
+                    fn deref(&self) -> &Self::Target {
+                        unsafe {
+                            &*self.0
+                        }
+                    }
                 }
-            }
-        } else {
-            quote! {
-                impl #trait_name for #ty_for_impl {
-                    #( #impl_items )*
+                unsafe impl objc::Message for #class_name { }
+                impl #class_name {
+                    pub fn alloc() -> Self {
+                        Self(unsafe {
+                            msg_send!(objc::class!(#class_name), alloc)
+                        })
+                    }
                 }
+            };
+            result.push(struct_block);
+            for protocol_id in self.conforms_to.iter() {
+                let protocol_name = ctx.rust_ident(
+                    ctx.resolve_type(protocol_id.expect_type_id(ctx))
+                        .name()
+                        .unwrap(),
+                );
+                let impl_trait = quote! {
+                    impl #protocol_name for #class_name { }
+                };
+                result.push(impl_trait);
             }
-        };
+            let mut parent_class = self.parent_class;
+            while let Some(parent_id) = parent_class {
+                let parent = parent_id
+                    .expect_type_id(ctx)
+                    .into_resolver()
+                    .through_type_refs()
+                    .resolve(ctx)
+                    .expect_type()
+                    .kind();
+
+                parent_class = if let TypeKind::ObjCInterface(ref parent) =
+                    parent
+                {
+                    let parent_name = ctx.rust_ident(parent.rust_name());
+                    let impl_trait = if parent.is_template() {
+                        let template_names: Vec<Ident> = parent
+                            .template_names
+                            .iter()
+                            .map(|g| ctx.rust_ident(g))
+                            .collect();
+                        quote! {
+                            impl <#(#template_names :'static),*> #parent_name <#(#template_names),*> for #class_name {
+                            }
+                        }
+                    } else {
+                        quote! {
+                            impl #parent_name for #class_name { }
+                        }
+                    };
+                    result.push(impl_trait);
+                    parent.parent_class
+                } else {
+                    None
+                };
+            }
+        }
+
+        if !self.is_protocol() {
+            let impl_block = if self.is_template() {
+                let template_names: Vec<Ident> = self
+                    .template_names
+                    .iter()
+                    .map(|g| ctx.rust_ident(g))
+                    .collect();
+                quote! {
+                    impl <#(#template_names :'static),*> #trait_name <#(#template_names),*> for #class_name {
+                    }
+                }
+            } else {
+                quote! {
+                    impl #trait_name for #class_name {
+                    }
+                }
+            };
+            result.push(impl_block);
+        }
 
         result.push(trait_block);
-        result.push(impl_block);
         result.saw_objc();
     }
 }
@@ -3824,10 +3894,10 @@ pub(crate) fn codegen(
 
 mod utils {
     use super::{error, ToRustTyOrOpaque};
-    use ir::context::BindgenContext;
-    use ir::function::{Abi, FunctionSig};
-    use ir::item::{Item, ItemCanonicalPath};
-    use ir::ty::TypeKind;
+    use crate::ir::context::BindgenContext;
+    use crate::ir::function::{Abi, FunctionSig};
+    use crate::ir::item::{Item, ItemCanonicalPath};
+    use crate::ir::ty::TypeKind;
     use proc_macro2;
     use std::borrow::Cow;
     use std::mem;
