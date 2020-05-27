@@ -6,7 +6,7 @@
 //     name: "bindgen",
 //     crate_name: "bindgen",
 //     srcs: ["src/main.rs"],
-//     edition: "2015",
+//     edition: "2018",
 //     features: [
 //         "clap",
 //         "default",
@@ -42,7 +42,7 @@ rust_library_host_rlib {
     name: "libbindgen",
     crate_name: "bindgen",
     srcs: ["src/lib.rs"],
-    edition: "2015",
+    edition: "2018",
     features: [
         "clap",
         "default",
