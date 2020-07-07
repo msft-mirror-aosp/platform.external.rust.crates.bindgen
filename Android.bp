@@ -31,7 +31,7 @@ rust_binary_host {
         "which",
         "which-rustfmt",
     ],
-    rlibs: [
+    rustlibs: [
         "libbindgen",
         "libbitflags",
         "libcexpr",
@@ -50,7 +50,7 @@ rust_binary_host {
     ],
 }
 
-rust_library_host_rlib {
+rust_library_host {
     name: "libbindgen",
     crate_name: "bindgen",
     srcs: ["src/lib.rs"],
@@ -61,7 +61,7 @@ rust_library_host_rlib {
         "which",
         "which-rustfmt",
     ],
-    rlibs: [
+    rustlibs: [
         "libbitflags",
         "libcexpr",
         "libcfg_if",
