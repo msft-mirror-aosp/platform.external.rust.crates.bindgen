@@ -24,6 +24,7 @@ common_bindgen_flags = " -o $(out) $(in) -- -MD -MF $(depfile)"
 
 rust_binary_host {
     name: "bindgen",
+    // has rustc warnings
     crate_name: "bindgen",
     srcs: ["src/main.rs"],
     edition: "2018",
@@ -54,6 +55,7 @@ rust_binary_host {
 
 rust_library_host {
     name: "libbindgen",
+    // has rustc warnings
     crate_name: "bindgen",
     srcs: ["src/lib.rs"],
     edition: "2018",
