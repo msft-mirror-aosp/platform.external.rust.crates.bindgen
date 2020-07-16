@@ -7,6 +7,7 @@ sh_binary_host {
 }
 
 // Example genrule module to call bindgen.sh:
+//
 // genrule {
 //     name: "my_example",
 //     tools: ["bindgen.sh", "bindgen"],
@@ -14,14 +15,16 @@ sh_binary_host {
 //     srcs: ["src/my_example_wrapper.h"],
 //     out: ["my_example.rs"],
 //     cmd: "$(location)" + my_example_bindgen_flags
-//     + common_bindgen_flags + my_example_clang_flags
-//     + " && cp $(out) `dirname $(in)`/my_example.rs",
+//     + common_bindgen_flags + my_example_clang_flags,
 // }
+//
+// The 'out' file is a rust module to be included into other rust crates.
 
 common_bindgen_flags = " -o $(out) $(in) -- -MD -MF $(depfile)"
 
 rust_binary_host {
     name: "bindgen",
+    // has rustc warnings
     crate_name: "bindgen",
     srcs: ["src/main.rs"],
     edition: "2018",
@@ -52,6 +55,7 @@ rust_binary_host {
 
 rust_library_host {
     name: "libbindgen",
+    // has rustc warnings
     crate_name: "bindgen",
     srcs: ["src/lib.rs"],
     edition: "2018",
