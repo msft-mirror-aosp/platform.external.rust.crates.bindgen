@@ -1,0 +1,30 @@
+sh_binary_host {
+    name: "bindgen.sh",
+    src: "bindgen.sh",
+}
+
+// Example genrule module to call bindgen.sh:
+//
+// genrule {
+//     name: "my_example",
+//     tools: ["bindgen.sh", "bindgen"],
+//     depfile: true,
+//     srcs: ["src/my_example_wrapper.h"],
+//     out: ["my_example.rs"],
+//     cmd: "$(location)" + my_example_bindgen_flags
+//     + common_bindgen_flags + my_example_clang_flags,
+// }
+//
+// The 'out' file is a rust module to be included into other rust crates.
+//
+// common_bindgen_flags = " -o $(out) $(in) -- -MD -MF $(depfile)"
+//
+// Example module to use bindgen.sh genrule module.
+//
+// rust_library {
+//     name: "libmy_example",
+//     // declare dependency on my_example genrule module
+//     // src/lib.rs should include/import the output file my_example.rs
+//     srcs: ["src/lib.rs", ":my_example"],
+//     // other properties
+// }
