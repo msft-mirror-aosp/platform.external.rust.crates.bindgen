@@ -38,10 +38,17 @@ case "$0" in
     echo "ERROR: bindgen.sh only works on linux-x86 and darwin-x86"
     exit 1
 esac
-echo "### $0 called in `pwd`"
-echo "### CLANG_PATH=${CLANG_PATH}"
-echo "### LIBCLANG_PATH=${LIBCLANG_PATH}"
-echo "### RUSTFMT=${RUSTFMT}"
+
+for (( i=1; i <= $#; i++)); do
+  if [[ ${!i} == "-v" || ${!i} == "--verbose" ]]
+  then
+    echo "### $0 called in `pwd`"
+    echo "### CLANG_PATH=${CLANG_PATH}"
+    echo "### LIBCLANG_PATH=${LIBCLANG_PATH}"
+    echo "### RUSTFMT=${RUSTFMT}"
+    break
+  fi
+done
 
 `dirname $0`/bindgen $*
 
