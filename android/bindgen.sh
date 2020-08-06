@@ -50,7 +50,10 @@ for (( i=1; i <= $#; i++)); do
   fi
 done
 
-`dirname $0`/bindgen $*
+BINDGEN=$1
+shift
+
+${BINDGEN} $*
 
 # find -MF flag and append tool paths to the dependent file
 for (( i=1; i <= $#; i++)); do
