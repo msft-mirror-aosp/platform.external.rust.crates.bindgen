@@ -11,7 +11,8 @@ sh_binary_host {
 //     depfile: true,
 //     srcs: ["src/my_example_wrapper.h"],
 //     out: ["my_example.rs"],
-//     cmd: "$(location)" + my_example_bindgen_flags
+//     cmd: "$(location bindgen.sh) $(location bindgen)"
+//     + my_example_bindgen_flags
 //     + common_bindgen_flags + my_example_clang_flags,
 // }
 //
