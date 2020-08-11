@@ -1,6 +1,6 @@
 use bindgen::{
-    builder, AliasVariation, Builder, CodegenConfig, EnumVariation, RustTarget,
-    RUST_TARGET_STRINGS,
+    builder, AliasVariation, Builder, CodegenConfig, EnumVariation,
+    MacroTypeVariation, RustTarget, RUST_TARGET_STRINGS,
 };
 use clap::{App, Arg};
 use std::fs::File;
@@ -87,6 +87,13 @@ where
                 .takes_value(true)
                 .multiple(true)
                 .number_of_values(1),
+            Arg::with_name("default-macro-constant-type")
+                .long("default-macro-constant-type")
+                .help("The default signed/unsigned type for C macro constants.")
+                .value_name("variant")
+                .default_value("unsigned")
+                .possible_values(&["signed", "unsigned"])
+                .multiple(false),
             Arg::with_name("default-alias-style")
                 .long("default-alias-style")
                 .help("The default style of code used to generate typedefs.")
@@ -507,6 +514,11 @@ where
         for regex in constified_mods {
             builder = builder.constified_enum_module(regex);
         }
+    }
+
+    if let Some(variant) = matches.value_of("default-macro-constant-type") {
+        builder = builder
+            .default_macro_constant_type(MacroTypeVariation::from_str(variant)?)
     }
 
     if let Some(variant) = matches.value_of("default-alias-style") {
