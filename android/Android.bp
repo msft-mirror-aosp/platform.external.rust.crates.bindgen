@@ -11,10 +11,15 @@ sh_binary_host {
 //     depfile: true,
 //     srcs: ["src/my_example_wrapper.h"],
 //     out: ["my_example.rs"],
-//     cmd: "$(location bindgen.sh) $(location bindgen)"
-//     + my_example_bindgen_flags
+//     cmd: "$(location)" + my_example_bindgen_flags
 //     + common_bindgen_flags + my_example_clang_flags,
 // }
+//
+// If your build system installs bindgen.sh and bindgen
+// in different locations, use the following cmd:
+//     cmd: "$(location bindgen.sh) --bindgen-path $(location bindgen)"
+//     + my_example_bindgen_flags
+//     + common_bindgen_flags + my_example_clang_flags,
 //
 // The 'out' file is a rust module to be included into other rust crates.
 //
