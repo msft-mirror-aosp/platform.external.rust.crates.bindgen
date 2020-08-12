@@ -72,7 +72,7 @@ doc_mod!(ir, ir_docs);
 doc_mod!(parse, parse_docs);
 doc_mod!(regex_set, regex_set_docs);
 
-pub use crate::codegen::{AliasVariation, EnumVariation};
+pub use crate::codegen::{AliasVariation, EnumVariation, MacroTypeVariation};
 use crate::features::RustFeatures;
 pub use crate::features::{
     RustTarget, LATEST_STABLE_RUST, RUST_TARGET_STRINGS,
@@ -262,6 +262,12 @@ impl Builder {
                 }
                 .into(),
             )
+        }
+
+        if self.options.default_macro_constant_type != Default::default() {
+            output_vector.push("--default-macro-constant-type".into());
+            output_vector
+                .push(self.options.default_macro_constant_type.as_str().into());
         }
 
         if self.options.default_alias_style != Default::default() {
@@ -860,6 +866,15 @@ impl Builder {
     /// just constants. Regular expressions are supported.
     pub fn constified_enum_module<T: AsRef<str>>(mut self, arg: T) -> Builder {
         self.options.constified_enum_modules.insert(arg);
+        self
+    }
+
+    /// Set the default type for macro constants
+    pub fn default_macro_constant_type(
+        mut self,
+        arg: codegen::MacroTypeVariation,
+    ) -> Builder {
+        self.options.default_macro_constant_type = arg;
         self
     }
 
@@ -1491,6 +1506,9 @@ struct BindgenOptions {
     /// The enum patterns to mark an enum as a set of constants.
     constified_enums: RegexSet,
 
+    /// The default type for C macro constants.
+    default_macro_constant_type: codegen::MacroTypeVariation,
+
     /// The default style of code to generate for typedefs.
     default_alias_style: codegen::AliasVariation,
 
@@ -1771,6 +1789,7 @@ impl Default for BindgenOptions {
             rustified_non_exhaustive_enums: Default::default(),
             constified_enums: Default::default(),
             constified_enum_modules: Default::default(),
+            default_macro_constant_type: Default::default(),
             default_alias_style: Default::default(),
             type_alias: Default::default(),
             new_type_alias: Default::default(),
