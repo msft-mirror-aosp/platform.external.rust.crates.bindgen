@@ -52,9 +52,16 @@ for (( i=1; i <= $#; i++)); do
   fi
 done
 
-BINDGEN=$1
-shift
-
+if [ "$1" == "--bindgen-path" ]
+then
+  # non-standard installation; user given bindgen path
+  BINDGEN=$2
+  shift
+  shift
+else
+  # standard installation; use bindgen in the same directory
+  BINDGEN=`dirname $0`/bindgen
+fi
 ${BINDGEN} $*
 
 # find -MF flag and append tool paths to the dependent file
