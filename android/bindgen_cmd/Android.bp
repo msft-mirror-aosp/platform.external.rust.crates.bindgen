@@ -1,0 +1,18 @@
+rust_library_host {
+    name: "libbindgen_cmd",
+    crate_name: "bindgen_cmd",
+    srcs: ["src/lib.rs"],
+    edition: "2018",
+    features: [
+        "clap",
+        "runtime",
+        "which",
+        "which-rustfmt",
+    ],
+    rustlibs: [
+        "libbindgen",
+        "libclap",
+        "libenv_logger",
+    ],
+    compile_multilib: "first",
+}
