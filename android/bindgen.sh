@@ -22,13 +22,15 @@ CLANG_SO_GIT=11git
 
 CLANG_HOST=prebuilts/clang/host
 RUST_HOST=prebuilts/rust
-case "$0" in
-  *darwin-x86*)
+MYDIR=`dirname $0`
+MYDIR=`(cd $MYDIR ; pwd)`
+case "$MYDIR" in
+  */darwin-x86/bin)
     export CLANG_PATH=${CLANG_HOST}/darwin-x86/${CLANG_VERSION}/bin/clang
     export LIBCLANG_PATH=${CLANG_HOST}/darwin-x86/${CLANG_VERSION}/lib64/libclang.dylib
     export RUSTFMT=${RUST_HOST}/darwin-x86/stable/rustfmt
     ;;
-  *linux-x86*)
+  */linux-x86/bin)
     export CLANG_PATH=${CLANG_HOST}/linux-x86/${CLANG_VERSION}/bin/clang
     export LIBCLANG_PATH=${CLANG_HOST}/linux-x86/${CLANG_VERSION}/lib64/libclang.so.${CLANG_SO_GIT}
     export RUSTFMT=${RUST_HOST}/linux-x86/stable/rustfmt
