@@ -1,6 +1,7 @@
 use bindgen::{
     builder, AliasVariation, Builder, CodegenConfig, EnumVariation,
-    MacroTypeVariation, RustTarget, RUST_TARGET_STRINGS,
+    MacroTypeVariation, RustTarget, DEFAULT_ANON_FIELDS_PREFIX,
+    RUST_TARGET_STRINGS,
 };
 use clap::{App, Arg};
 use std::fs::File;
@@ -241,6 +242,12 @@ where
                 )
                 .value_name("prefix")
                 .takes_value(true),
+            Arg::with_name("anon-fields-prefix")
+                .long("anon-fields-prefix")
+                .help("Use the given prefix for the anon fields.")
+                .value_name("prefix")
+                .default_value(DEFAULT_ANON_FIELDS_PREFIX)
+                .takes_value(true),
             Arg::with_name("time-phases")
                 .long("time-phases")
                 .help("Time the different bindgen phases and print to stderr"),
@@ -433,6 +440,13 @@ where
             Arg::with_name("no-copy")
                 .long("no-copy")
                 .help("Avoid deriving Copy for types matching <regex>.")
+                .value_name("regex")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1),
+            Arg::with_name("no-debug")
+                .long("no-debug")
+                .help("Avoid deriving Debug for types matching <regex>.")
                 .value_name("regex")
                 .takes_value(true)
                 .multiple(true)
@@ -639,6 +653,10 @@ where
         builder = builder.ctypes_prefix(prefix);
     }
 
+    if let Some(prefix) = matches.value_of("anon-fields-prefix") {
+        builder = builder.anon_fields_prefix(prefix);
+    }
+
     if let Some(what_to_generate) = matches.value_of("generate") {
         let mut config = CodegenConfig::empty();
         for what in what_to_generate.split(",") {
@@ -840,6 +858,12 @@ where
     if let Some(no_copy) = matches.values_of("no-copy") {
         for regex in no_copy {
             builder = builder.no_copy(regex);
+        }
+    }
+
+    if let Some(no_debug) = matches.values_of("no-debug") {
+        for regex in no_debug {
+            builder = builder.no_debug(regex);
         }
     }
 
