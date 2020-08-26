@@ -9,11 +9,11 @@ third_party {
     type: GIT
     value: "https://github.com/rust-lang/rust-bindgen"
   }
-  version: "0.54.1"
+  version: "0.55.1"
   license_type: NOTICE
   last_upgrade_date {
     year: 2020
-    month: 7
-    day: 10
+    month: 8
+    day: 24
   }
 }
