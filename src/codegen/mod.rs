@@ -95,6 +95,93 @@ fn root_import(
     }
 }
 
+bitflags! {
+    struct DerivableTraits: u16 {
+        const DEBUG       = 1 << 0;
+        const DEFAULT     = 1 << 1;
+        const COPY        = 1 << 2;
+        const CLONE       = 1 << 3;
+        const HASH        = 1 << 4;
+        const PARTIAL_ORD = 1 << 5;
+        const ORD         = 1 << 6;
+        const PARTIAL_EQ  = 1 << 7;
+        const EQ          = 1 << 8;
+    }
+}
+
+fn derives_of_item(item: &Item, ctx: &BindgenContext) -> DerivableTraits {
+    let mut derivable_traits = DerivableTraits::empty();
+
+    if item.can_derive_debug(ctx) && !item.annotations().disallow_debug() {
+        derivable_traits |= DerivableTraits::DEBUG;
+    }
+
+    if item.can_derive_default(ctx) {
+        derivable_traits |= DerivableTraits::DEFAULT;
+    }
+
+    let all_template_params = item.all_template_params(ctx);
+
+    if item.can_derive_copy(ctx) && !item.annotations().disallow_copy() {
+        derivable_traits |= DerivableTraits::COPY;
+
+        if ctx.options().rust_features().builtin_clone_impls ||
+            !all_template_params.is_empty()
+        {
+            // FIXME: This requires extra logic if you have a big array in a
+            // templated struct. The reason for this is that the magic:
+            //     fn clone(&self) -> Self { *self }
+            // doesn't work for templates.
+            //
+            // It's not hard to fix though.
+            derivable_traits |= DerivableTraits::CLONE;
+        }
+    }
+
+    if item.can_derive_hash(ctx) {
+        derivable_traits |= DerivableTraits::HASH;
+    }
+
+    if item.can_derive_partialord(ctx) {
+        derivable_traits |= DerivableTraits::PARTIAL_ORD;
+    }
+
+    if item.can_derive_ord(ctx) {
+        derivable_traits |= DerivableTraits::ORD;
+    }
+
+    if item.can_derive_partialeq(ctx) {
+        derivable_traits |= DerivableTraits::PARTIAL_EQ;
+    }
+
+    if item.can_derive_eq(ctx) {
+        derivable_traits |= DerivableTraits::EQ;
+    }
+
+    derivable_traits
+}
+
+impl From<DerivableTraits> for Vec<&'static str> {
+    fn from(derivable_traits: DerivableTraits) -> Vec<&'static str> {
+        [
+            (DerivableTraits::DEBUG, "Debug"),
+            (DerivableTraits::DEFAULT, "Default"),
+            (DerivableTraits::COPY, "Copy"),
+            (DerivableTraits::CLONE, "Clone"),
+            (DerivableTraits::HASH, "Hash"),
+            (DerivableTraits::PARTIAL_ORD, "PartialOrd"),
+            (DerivableTraits::ORD, "Ord"),
+            (DerivableTraits::PARTIAL_EQ, "PartialEq"),
+            (DerivableTraits::EQ, "Eq"),
+        ]
+        .iter()
+        .filter_map(|&(flag, derive)| {
+            Some(derive).filter(|_| derivable_traits.contains(flag))
+        })
+        .collect()
+    }
+}
+
 struct CodegenResult<'a> {
     items: Vec<proc_macro2::TokenStream>,
 
@@ -362,7 +449,7 @@ impl CodeGenerator for Item {
             // TODO(emilio, #453): Figure out what to do when this happens
             // legitimately, we could track the opaque stuff and disable the
             // assertion there I guess.
-            error!("Found non-whitelisted item in code generation: {:?}", self);
+            warn!("Found non-whitelisted item in code generation: {:?}", self);
         }
 
         result.set_seen(self.id());
@@ -793,8 +880,17 @@ impl CodeGenerator for Type {
                             "repr_transparent feature is required to use {:?}",
                             alias_style
                         );
+
+                        let mut attributes =
+                            vec![attributes::repr("transparent")];
+                        let derivable_traits = derives_of_item(item, ctx);
+                        if !derivable_traits.is_empty() {
+                            let derives: Vec<_> = derivable_traits.into();
+                            attributes.push(attributes::derives(&derives))
+                        }
+
                         quote! {
-                            #[repr(transparent)]
+                            #( #attributes )*
                             pub struct #rust_name
                         }
                     }
@@ -1787,66 +1883,35 @@ impl CodeGenerator for CompInfo {
             }
         }
 
-        let mut derives = vec![];
-        if item.can_derive_debug(ctx) {
-            derives.push("Debug");
-        } else {
-            needs_debug_impl =
-                ctx.options().derive_debug && ctx.options().impl_debug
+        let derivable_traits = derives_of_item(item, ctx);
+        if !derivable_traits.contains(DerivableTraits::DEBUG) {
+            needs_debug_impl = ctx.options().derive_debug &&
+                ctx.options().impl_debug &&
+                !ctx.no_debug_by_name(item) &&
+                !item.annotations().disallow_debug();
         }
 
-        if item.can_derive_default(ctx) {
-            derives.push("Default");
-        } else {
+        if !derivable_traits.contains(DerivableTraits::DEFAULT) {
             needs_default_impl =
                 ctx.options().derive_default && !self.is_forward_declaration();
         }
 
         let all_template_params = item.all_template_params(ctx);
 
-        if item.can_derive_copy(ctx) && !item.annotations().disallow_copy() {
-            derives.push("Copy");
-
-            if ctx.options().rust_features().builtin_clone_impls ||
-                !all_template_params.is_empty()
-            {
-                // FIXME: This requires extra logic if you have a big array in a
-                // templated struct. The reason for this is that the magic:
-                //     fn clone(&self) -> Self { *self }
-                // doesn't work for templates.
-                //
-                // It's not hard to fix though.
-                derives.push("Clone");
-            } else {
-                needs_clone_impl = true;
-            }
+        if derivable_traits.contains(DerivableTraits::COPY) &&
+            !derivable_traits.contains(DerivableTraits::CLONE)
+        {
+            needs_clone_impl = true;
         }
 
-        if item.can_derive_hash(ctx) {
-            derives.push("Hash");
-        }
-
-        if item.can_derive_partialord(ctx) {
-            derives.push("PartialOrd");
-        }
-
-        if item.can_derive_ord(ctx) {
-            derives.push("Ord");
-        }
-
-        if item.can_derive_partialeq(ctx) {
-            derives.push("PartialEq");
-        } else {
+        if !derivable_traits.contains(DerivableTraits::PARTIAL_EQ) {
             needs_partialeq_impl = ctx.options().derive_partialeq &&
                 ctx.options().impl_partialeq &&
                 ctx.lookup_can_derive_partialeq_or_partialord(item.id()) ==
                     CanDerive::Manually;
         }
 
-        if item.can_derive_eq(ctx) {
-            derives.push("Eq");
-        }
-
+        let mut derives: Vec<_> = derivable_traits.into();
         derives.extend(item.annotations().derives().iter().map(String::as_str));
 
         if !derives.is_empty() {
@@ -2375,6 +2440,7 @@ enum EnumBuilder<'a> {
         is_bitfield: bool,
     },
     Consts {
+        repr: proc_macro2::TokenStream,
         variants: Vec<proc_macro2::TokenStream>,
         codegen_depth: usize,
     },
@@ -2393,6 +2459,14 @@ impl<'a> EnumBuilder<'a> {
             EnumBuilder::NewType { codegen_depth, .. } |
             EnumBuilder::ModuleConsts { codegen_depth, .. } |
             EnumBuilder::Consts { codegen_depth, .. } => codegen_depth,
+        }
+    }
+
+    /// Returns true if the builder is for a rustified enum.
+    fn is_rust_enum(&self) -> bool {
+        match *self {
+            EnumBuilder::Rust { .. } => true,
+            _ => false,
         }
     }
 
@@ -2429,13 +2503,20 @@ impl<'a> EnumBuilder<'a> {
                 }
             }
 
-            EnumVariation::Consts => EnumBuilder::Consts {
-                variants: vec![quote! {
+            EnumVariation::Consts => {
+                let mut variants = Vec::new();
+
+                variants.push(quote! {
                     #( #attrs )*
                     pub type #ident = #repr;
-                }],
-                codegen_depth: enum_codegen_depth,
-            },
+                });
+
+                EnumBuilder::Consts {
+                    repr,
+                    variants,
+                    codegen_depth: enum_codegen_depth,
+                }
+            }
 
             EnumVariation::ModuleConsts => {
                 let ident = Ident::new(
@@ -2467,7 +2548,12 @@ impl<'a> EnumBuilder<'a> {
         is_ty_named: bool,
     ) -> Self {
         let variant_name = ctx.rust_mangle(variant.name());
+        let is_rust_enum = self.is_rust_enum();
         let expr = match variant.val() {
+            EnumVariantValue::Boolean(v) if is_rust_enum => {
+                helpers::ast_ty::uint_expr(v as u64)
+            }
+            EnumVariantValue::Boolean(v) => quote!(#v),
             EnumVariantValue::Signed(v) => helpers::ast_ty::int_expr(v),
             EnumVariantValue::Unsigned(v) => helpers::ast_ty::uint_expr(v),
         };
@@ -2530,7 +2616,7 @@ impl<'a> EnumBuilder<'a> {
                 self
             }
 
-            EnumBuilder::Consts { .. } => {
+            EnumBuilder::Consts { ref repr, .. } => {
                 let constant_name = match mangling_prefix {
                     Some(prefix) => {
                         Cow::Owned(format!("{}_{}", prefix, variant_name))
@@ -2538,10 +2624,12 @@ impl<'a> EnumBuilder<'a> {
                     None => variant_name,
                 };
 
+                let ty = if is_ty_named { &rust_ty } else { repr };
+
                 let ident = ctx.rust_ident(constant_name);
                 result.push(quote! {
                     #doc
-                    pub const #ident : #rust_ty = #expr ;
+                    pub const #ident : #ty = #expr ;
                 });
 
                 self
@@ -2796,9 +2884,12 @@ impl CodeGenerator for Enum {
             });
         }
 
-        let repr = {
-            let repr_name = ctx.rust_ident_raw(repr_name);
-            quote! { #repr_name }
+        let repr = match self.repr() {
+            Some(ty) => ty.to_rust_ty_or_opaque(ctx, &()),
+            None => {
+                let repr_name = ctx.rust_ident_raw(repr_name);
+                quote! { #repr_name }
+            }
         };
 
         let mut builder = EnumBuilder::new(
@@ -2950,6 +3041,50 @@ impl CodeGenerator for Enum {
 
         let item = builder.build(ctx, enum_rust_ty, result);
         result.push(item);
+    }
+}
+
+/// Enum for the default type of macro constants.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum MacroTypeVariation {
+    /// Use i32 or i64
+    Signed,
+    /// Use u32 or u64
+    Unsigned,
+}
+
+impl MacroTypeVariation {
+    /// Convert a `MacroTypeVariation` to its str representation.
+    pub fn as_str(&self) -> &str {
+        match self {
+            MacroTypeVariation::Signed => "signed",
+            MacroTypeVariation::Unsigned => "unsigned",
+        }
+    }
+}
+
+impl Default for MacroTypeVariation {
+    fn default() -> MacroTypeVariation {
+        MacroTypeVariation::Unsigned
+    }
+}
+
+impl std::str::FromStr for MacroTypeVariation {
+    type Err = std::io::Error;
+
+    /// Create a `MacroTypeVariation` from a string.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "signed" => Ok(MacroTypeVariation::Signed),
+            "unsigned" => Ok(MacroTypeVariation::Unsigned),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                concat!(
+                    "Got an invalid MacroTypeVariation. Accepted values ",
+                    "are 'signed' and 'unsigned'"
+                ),
+            )),
+        }
     }
 }
 
@@ -3265,10 +3400,7 @@ impl TryToRustTy for Type {
                     IntKind::I64 => Ok(quote! { i64 }),
                     IntKind::U64 => Ok(quote! { u64 }),
                     IntKind::Custom { name, .. } => {
-                        let ident = ctx.rust_ident_raw(name);
-                        Ok(quote! {
-                            #ident
-                        })
+                        Ok(proc_macro2::TokenStream::from_str(name).unwrap())
                     }
                     IntKind::U128 => {
                         Ok(if ctx.options().rust_features.i128_and_u128 {
@@ -3376,6 +3508,11 @@ impl TryToRustTy for Type {
                     inner.into_resolver().through_type_refs().resolve(ctx);
                 let inner_ty = inner.expect_type();
 
+                let is_objc_pointer = match inner_ty.kind() {
+                    TypeKind::ObjCInterface(..) => true,
+                    _ => false,
+                };
+
                 // Regardless if we can properly represent the inner type, we
                 // should always generate a proper pointer here, so use
                 // infallible conversion of the inner type.
@@ -3384,7 +3521,8 @@ impl TryToRustTy for Type {
 
                 // Avoid the first function pointer level, since it's already
                 // represented in Rust.
-                if inner_ty.canonical_type(ctx).is_function() {
+                if inner_ty.canonical_type(ctx).is_function() || is_objc_pointer
+                {
                     Ok(ty)
                 } else {
                     Ok(ty.to_ptr(is_const))
@@ -3403,9 +3541,12 @@ impl TryToRustTy for Type {
             TypeKind::ObjCId => Ok(quote! {
                 id
             }),
-            TypeKind::ObjCInterface(..) => Ok(quote! {
-                objc::runtime::Object
-            }),
+            TypeKind::ObjCInterface(ref interface) => {
+                let name = ctx.rust_ident(interface.name());
+                Ok(quote! {
+                    #name
+                })
+            }
             ref u @ TypeKind::UnresolvedTypeRef(..) => {
                 unreachable!("Should have been resolved after parsing {:?}!", u)
             }
@@ -3717,7 +3858,7 @@ impl CodeGenerator for ObjCInterface {
         }
 
         let instance_method_names: Vec<_> =
-            self.methods().iter().map({ |m| m.rust_name() }).collect();
+            self.methods().iter().map(|m| m.rust_name()).collect();
 
         for class_method in self.class_methods() {
             let ambiquity =
@@ -3878,7 +4019,7 @@ pub(crate) fn codegen(
                     "Your dot file was generated successfully into: {}",
                     path
                 ),
-                Err(e) => error!("{}", e),
+                Err(e) => warn!("{}", e),
             }
         }
 
@@ -4259,11 +4400,12 @@ mod utils {
                     TypeKind::Pointer(inner) => {
                         let inner = ctx.resolve_item(inner);
                         let inner_ty = inner.expect_type();
-                        if let TypeKind::ObjCInterface(_) =
+                        if let TypeKind::ObjCInterface(ref interface) =
                             *inner_ty.canonical_type(ctx).kind()
                         {
+                            let name = ctx.rust_ident(interface.name());
                             quote! {
-                                id
+                                #name
                             }
                         } else {
                             arg_item.to_rust_ty_or_opaque(ctx, &())
