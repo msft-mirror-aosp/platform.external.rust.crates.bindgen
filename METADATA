@@ -6,8 +6,8 @@ third_party {
     value: "https://crates.io/crates/bindgen"
   }
   url {
-    type: GIT
-    value: "https://github.com/rust-lang/rust-bindgen"
+    type: ARCHIVE
+    value: "https://static.crates.io/crates/bindgen/bindgen-0.55.1.crate"
   }
   version: "0.55.1"
   license_type: NOTICE
