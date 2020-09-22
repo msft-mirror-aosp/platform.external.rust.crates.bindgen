@@ -9,8 +9,6 @@ set -e
 cp -a -n -r $2/android $1/
 
 # Use pregenerated host-target.txt in the out directory.
-mkdir out
-echo -n "x86_64-unknown-linux-gnu" > out/host-target.txt
 OLDSTR='include_str!(concat!(env!("OUT_DIR"), "/host-target.txt"));'
 NEWSTR='include_str!("../out/host-target.txt");  // to build on ANDROID'
 sed -i -e "s:$OLDSTR:$NEWSTR:" src/lib.rs
