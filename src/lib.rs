@@ -1915,7 +1915,7 @@ pub struct Bindings {
 }
 
 pub(crate) const HOST_TARGET: &'static str =
-    include_str!("../out/host-target.txt");  // to build on ANDROID
+    include_str!(concat!(env!("OUT_DIR"), "/host-target.txt"));
 
 // Some architecture triplets are different between rust and libclang, see #1211
 // and duplicates.
