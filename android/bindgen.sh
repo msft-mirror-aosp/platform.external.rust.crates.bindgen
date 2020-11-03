@@ -17,7 +17,7 @@ set -e
 
 # Ideally only 2 version numbers are changed after a new clang/rust release.
 # libclang.so could be from prebuilts/clang-tools when available in the future.
-CLANG_VERSION=clang-r383902c
+CLANG_VERSION=clang-r399163b
 CLANG_SO_GIT=11git
 
 CLANG_HOST=prebuilts/clang/host
