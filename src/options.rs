@@ -23,7 +23,7 @@ where
     );
 
     let matches = App::new("bindgen")
-        .version(option_env!("CARGO_PKG_VERSION").unwrap_or("unknown"))
+        .version(Some("0.55.1").unwrap_or("unknown"))
         .about("Generates Rust bindings from C/C++ headers.")
         .usage("bindgen [FLAGS] [OPTIONS] <header> -- <clang-args>...")
         .args(&[
