@@ -23,7 +23,7 @@ where
     );
 
     let matches = App::new("bindgen")
-        .version(Some("0.55.1").unwrap_or("unknown"))
+        .version(Some("0.56.0").unwrap_or("unknown"))
         .about("Generates Rust bindings from C/C++ headers.")
         .usage("bindgen [FLAGS] [OPTIONS] <header> -- <clang-args>...")
         .args(&[
@@ -451,6 +451,13 @@ where
                 .takes_value(true)
                 .multiple(true)
                 .number_of_values(1),
+            Arg::with_name("no-default")
+                .long("no-default")
+                .help("Avoid deriving/implement Default for types matching <regex>.")
+                .value_name("regex")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1),
             Arg::with_name("no-hash")
                 .long("no-hash")
                 .help("Avoid deriving Hash for types matching <regex>.")
@@ -471,7 +478,11 @@ where
                 .long("wasm-import-module-name")
                 .value_name("name")
                 .takes_value(true)
-                .help("The name to be used in a #[link(wasm_import_module = ...)] statement")
+                .help("The name to be used in a #[link(wasm_import_module = ...)] statement"),
+            Arg::with_name("dynamic-loading")
+                .long("dynamic-loading")
+                .takes_value(true)
+                .help("Use dynamic loading mode with the given library name."),
         ]) // .args()
         .get_matches_from(args);
 
@@ -867,10 +878,20 @@ where
         }
     }
 
+    if let Some(no_default) = matches.values_of("no-default") {
+        for regex in no_default {
+            builder = builder.no_default(regex);
+        }
+    }
+
     if let Some(no_hash) = matches.values_of("no-hash") {
         for regex in no_hash {
             builder = builder.no_hash(regex);
         }
+    }
+
+    if let Some(dynamic_library_name) = matches.value_of("dynamic-loading") {
+        builder = builder.dynamic_library_name(dynamic_library_name);
     }
 
     let verbose = matches.is_present("verbose");
