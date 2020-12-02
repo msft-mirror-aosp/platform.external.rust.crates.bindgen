@@ -29,7 +29,6 @@ rust_binary_host {
         "libbindgen",
         "libbitflags",
         "libcexpr",
-        "libcfg_if",
         "libclang_sys",
         "libclap",
         "liblazy_static",
@@ -63,7 +62,6 @@ rust_library_host {
     rustlibs: [
         "libbitflags",
         "libcexpr",
-        "libcfg_if",
         "libclang_sys",
         "libclap",
         "liblazy_static",
@@ -84,9 +82,8 @@ rust_library_host {
 //   atty-0.2.14
 //   bitflags-1.2.1 "default"
 //   cexpr-0.4.0
-//   cfg-if-0.1.10
 //   cfg-if-1.0.0
-//   clang-sys-1.0.1 "clang_3_5,clang_3_6,clang_3_7,clang_3_8,clang_3_9,clang_4_0,clang_5_0,clang_6_0,libloading,runtime"
+//   clang-sys-1.0.3 "clang_3_5,clang_3_6,clang_3_7,clang_3_8,clang_3_9,clang_4_0,clang_5_0,clang_6_0,libloading,runtime"
 //   clap-2.33.3 "ansi_term,atty,color,default,strsim,suggestions,vec_map"
 //   glob-0.3.0
 //   lazy_static-1.4.0
