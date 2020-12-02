@@ -577,6 +577,14 @@ If you encounter an error missing from this list, please file an issue or a PR!"
         }
     }
 
+    /// Returns `true` if the target architecture is wasm32
+    pub fn is_target_wasm32(&self) -> bool {
+        match self.target_info {
+            Some(ref ti) => ti.triple.starts_with("wasm32-"),
+            None => false,
+        }
+    }
+
     /// Creates a timer for the current bindgen phase. If time_phases is `true`,
     /// the timer will print to stderr when it is dropped, otherwise it will do
     /// nothing.
@@ -2581,6 +2589,12 @@ If you encounter an error missing from this list, please file an issue or a PR!"
     pub fn no_debug_by_name(&self, item: &Item) -> bool {
         let name = item.path_for_whitelisting(self)[1..].join("::");
         self.options().no_debug_types.matches(&name)
+    }
+
+    /// Check if `--no-default` flag is enabled for this item.
+    pub fn no_default_by_name(&self, item: &Item) -> bool {
+        let name = item.path_for_whitelisting(self)[1..].join("::");
+        self.options().no_default_types.matches(&name)
     }
 
     /// Check if `--no-hash` flag is enabled for this item.
