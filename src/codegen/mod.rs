@@ -1,3 +1,4 @@
+mod dyngen;
 mod error;
 mod helpers;
 mod impl_debug;
@@ -10,6 +11,7 @@ pub(crate) mod bitfield_unit;
 #[cfg(all(test, target_endian = "little"))]
 mod bitfield_unit_tests;
 
+use self::dyngen::DynamicItems;
 use self::helpers::attributes;
 use self::struct_layout::StructLayoutTracker;
 
@@ -116,7 +118,7 @@ fn derives_of_item(item: &Item, ctx: &BindgenContext) -> DerivableTraits {
         derivable_traits |= DerivableTraits::DEBUG;
     }
 
-    if item.can_derive_default(ctx) {
+    if item.can_derive_default(ctx) && !item.annotations().disallow_default() {
         derivable_traits |= DerivableTraits::DEFAULT;
     }
 
@@ -184,6 +186,7 @@ impl From<DerivableTraits> for Vec<&'static str> {
 
 struct CodegenResult<'a> {
     items: Vec<proc_macro2::TokenStream>,
+    dynamic_items: DynamicItems,
 
     /// A monotonic counter used to add stable unique id's to stuff that doesn't
     /// need to be referenced by anything.
@@ -234,17 +237,22 @@ impl<'a> CodegenResult<'a> {
     fn new(codegen_id: &'a Cell<usize>) -> Self {
         CodegenResult {
             items: vec![],
+            dynamic_items: DynamicItems::new(),
             saw_bindgen_union: false,
             saw_incomplete_array: false,
             saw_objc: false,
             saw_block: false,
             saw_bitfield_unit: false,
-            codegen_id: codegen_id,
+            codegen_id,
             items_seen: Default::default(),
             functions_seen: Default::default(),
             vars_seen: Default::default(),
             overload_counters: Default::default(),
         }
+    }
+
+    fn dynamic_items(&mut self) -> &mut DynamicItems {
+        &mut self.dynamic_items
     }
 
     fn saw_bindgen_union(&mut self) {
@@ -987,9 +995,9 @@ impl<'a> Vtable<'a> {
         base_classes: &'a [Base],
     ) -> Self {
         Vtable {
-            item_id: item_id,
-            methods: methods,
-            base_classes: base_classes,
+            item_id,
+            methods,
+            base_classes,
         }
     }
 }
@@ -1892,8 +1900,10 @@ impl CodeGenerator for CompInfo {
         }
 
         if !derivable_traits.contains(DerivableTraits::DEFAULT) {
-            needs_default_impl =
-                ctx.options().derive_default && !self.is_forward_declaration();
+            needs_default_impl = ctx.options().derive_default &&
+                !self.is_forward_declaration() &&
+                !ctx.no_default_by_name(item) &&
+                !item.annotations().disallow_default();
         }
 
         let all_template_params = item.all_template_params(ctx);
@@ -2840,17 +2850,17 @@ impl CodeGenerator for Enum {
         }
 
         if !variation.is_const() {
-            let mut derives =
-                vec!["Debug", "Copy", "Clone", "PartialEq", "Eq", "Hash"];
-
-            if item.can_derive_partialord(ctx) {
-                derives.push("PartialOrd");
-            }
-
-            if item.can_derive_ord(ctx) {
-                derives.push("Ord");
-            }
-
+            let mut derives = derives_of_item(item, ctx);
+            // For backwards compat, enums always derive Clone/Eq/PartialEq/Hash, even
+            // if we don't generate those by default.
+            derives.insert(
+                DerivableTraits::CLONE |
+                    DerivableTraits::COPY |
+                    DerivableTraits::HASH |
+                    DerivableTraits::PARTIAL_EQ |
+                    DerivableTraits::EQ,
+            );
+            let derives: Vec<_> = derives.into();
             attrs.push(attributes::derives(&derives));
         }
 
@@ -3785,7 +3795,30 @@ impl CodeGenerator for Function {
                 pub fn #ident ( #( #args ),* ) #ret;
             }
         };
-        result.push(tokens);
+
+        // If we're doing dynamic binding generation, add to the dynamic items.
+        if ctx.options().dynamic_library_name.is_some() &&
+            self.kind() == FunctionKind::Function
+        {
+            let args_identifiers =
+                utils::fnsig_argument_identifiers(ctx, signature);
+            let return_item = ctx.resolve_item(signature.return_type());
+            let ret_ty = match *return_item.kind().expect_type().kind() {
+                TypeKind::Void => quote! {()},
+                _ => return_item.to_rust_ty_or_opaque(ctx, &()),
+            };
+            result.dynamic_items().push(
+                ident,
+                abi,
+                signature.is_variadic(),
+                args,
+                args_identifiers,
+                ret,
+                ret_ty,
+            );
+        } else {
+            result.push(tokens);
+        }
     }
 }
 
@@ -3806,7 +3839,7 @@ fn objc_method_codegen(
         }
     } else {
         let fn_args = fn_args.clone();
-        let args = iter::once(quote! { self }).chain(fn_args.into_iter());
+        let args = iter::once(quote! { &self }).chain(fn_args.into_iter());
         quote! {
             ( #( #args ),* ) #fn_ret
         }
@@ -3825,7 +3858,7 @@ fn objc_method_codegen(
         }
     } else {
         quote! {
-            msg_send!(self, #methods_and_args)
+            msg_send!(*self, #methods_and_args)
         }
     };
 
@@ -3901,7 +3934,7 @@ impl CodeGenerator for ObjCInterface {
         if !self.is_category() && !self.is_protocol() {
             let struct_block = quote! {
                 #[repr(transparent)]
-                #[derive(Clone, Copy)]
+                #[derive(Clone)]
                 pub struct #class_name(pub id);
                 impl std::ops::Deref for #class_name {
                     type Target = objc::runtime::Object;
@@ -3921,7 +3954,9 @@ impl CodeGenerator for ObjCInterface {
                 }
             };
             result.push(struct_block);
+            let mut protocol_set: HashSet<ItemId> = Default::default();
             for protocol_id in self.conforms_to.iter() {
+                protocol_set.insert(*protocol_id);
                 let protocol_name = ctx.rust_ident(
                     ctx.resolve_type(protocol_id.expect_type_id(ctx))
                         .name()
@@ -3942,30 +3977,74 @@ impl CodeGenerator for ObjCInterface {
                     .expect_type()
                     .kind();
 
-                parent_class = if let TypeKind::ObjCInterface(ref parent) =
-                    parent
-                {
-                    let parent_name = ctx.rust_ident(parent.rust_name());
-                    let impl_trait = if parent.is_template() {
-                        let template_names: Vec<Ident> = parent
-                            .template_names
-                            .iter()
-                            .map(|g| ctx.rust_ident(g))
-                            .collect();
-                        quote! {
-                            impl <#(#template_names :'static),*> #parent_name <#(#template_names),*> for #class_name {
+                let parent = match parent {
+                    TypeKind::ObjCInterface(ref parent) => parent,
+                    _ => break,
+                };
+                parent_class = parent.parent_class;
+
+                let parent_name = ctx.rust_ident(parent.rust_name());
+                let impl_trait = if parent.is_template() {
+                    let template_names: Vec<Ident> = parent
+                        .template_names
+                        .iter()
+                        .map(|g| ctx.rust_ident(g))
+                        .collect();
+                    quote! {
+                        impl <#(#template_names :'static),*> #parent_name <#(#template_names),*> for #class_name {
+                        }
+                    }
+                } else {
+                    quote! {
+                        impl #parent_name for #class_name { }
+                    }
+                };
+                result.push(impl_trait);
+                for protocol_id in parent.conforms_to.iter() {
+                    if protocol_set.insert(*protocol_id) {
+                        let protocol_name = ctx.rust_ident(
+                            ctx.resolve_type(protocol_id.expect_type_id(ctx))
+                                .name()
+                                .unwrap(),
+                        );
+                        let impl_trait = quote! {
+                            impl #protocol_name for #class_name { }
+                        };
+                        result.push(impl_trait);
+                    }
+                }
+                if !parent.is_template() {
+                    let parent_struct_name = parent.name();
+                    let child_struct_name = self.name();
+                    let parent_struct = ctx.rust_ident(parent_struct_name);
+                    let from_block = quote! {
+                        impl From<#class_name> for #parent_struct {
+                            fn from(child: #class_name) -> #parent_struct {
+                                #parent_struct(child.0)
                             }
                         }
-                    } else {
-                        quote! {
-                            impl #parent_name for #class_name { }
+                    };
+                    result.push(from_block);
+
+                    let error_msg = format!(
+                        "This {} cannot be downcasted to {}",
+                        parent_struct_name, child_struct_name
+                    );
+                    let try_into_block = quote! {
+                        impl std::convert::TryFrom<#parent_struct> for #class_name {
+                            type Error = &'static str;
+                            fn try_from(parent: #parent_struct) -> Result<#class_name, Self::Error> {
+                                let is_kind_of : bool = unsafe { msg_send!(parent, isKindOfClass:class!(#class_name))};
+                                if is_kind_of {
+                                    Ok(#class_name(parent.0))
+                                } else {
+                                    Err(#error_msg)
+                                }
+                            }
                         }
                     };
-                    result.push(impl_trait);
-                    parent.parent_class
-                } else {
-                    None
-                };
+                    result.push(try_into_block);
+                }
             }
         }
 
@@ -4029,11 +4108,18 @@ pub(crate) fn codegen(
             &(),
         );
 
+        if let Some(ref lib_name) = context.options().dynamic_library_name {
+            let lib_ident = context.rust_ident(lib_name);
+            let dynamic_items_tokens =
+                result.dynamic_items().get_tokens(lib_ident);
+            result.push(dynamic_items_tokens);
+        }
+
         result.items
     })
 }
 
-mod utils {
+pub mod utils {
     use super::{error, ToRustTyOrOpaque};
     use crate::ir::context::BindgenContext;
     use crate::ir::function::{Abi, FunctionSig};
@@ -4434,6 +4520,35 @@ mod utils {
         if sig.is_variadic() {
             args.push(quote! { ... })
         }
+
+        args
+    }
+
+    pub fn fnsig_argument_identifiers(
+        ctx: &BindgenContext,
+        sig: &FunctionSig,
+    ) -> Vec<proc_macro2::TokenStream> {
+        let mut unnamed_arguments = 0;
+        let args = sig
+            .argument_types()
+            .iter()
+            .map(|&(ref name, _ty)| {
+                let arg_name = match *name {
+                    Some(ref name) => ctx.rust_mangle(name).into_owned(),
+                    None => {
+                        unnamed_arguments += 1;
+                        format!("arg{}", unnamed_arguments)
+                    }
+                };
+
+                assert!(!arg_name.is_empty());
+                let arg_name = ctx.rust_ident(arg_name);
+
+                quote! {
+                    #arg_name
+                }
+            })
+            .collect::<Vec<_>>();
 
         args
     }
