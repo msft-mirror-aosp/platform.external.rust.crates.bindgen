@@ -90,10 +90,26 @@ pub(crate) use std::collections::hash_map::Entry;
 /// Default prefix for the anon fields.
 pub const DEFAULT_ANON_FIELDS_PREFIX: &'static str = "__bindgen_anon_";
 
+fn file_is_cpp(name_file: &str) -> bool {
+    name_file.ends_with(".hpp") ||
+        name_file.ends_with(".hxx") ||
+        name_file.ends_with(".hh") ||
+        name_file.ends_with(".h++")
+}
+
 fn args_are_cpp(clang_args: &[String]) -> bool {
-    return clang_args
-        .windows(2)
-        .any(|w| w[0] == "-xc++" || w[1] == "-xc++" || w == &["-x", "c++"]);
+    for w in clang_args.windows(2) {
+        if w[0] == "-xc++" || w[1] == "-xc++" {
+            return true;
+        }
+        if w[0] == "-x" && w[1] == "c++" {
+            return true;
+        }
+        if w[0] == "-include" && file_is_cpp(&w[1]) {
+            return true;
+        }
+    }
+    false
 }
 
 bitflags! {
@@ -462,6 +478,10 @@ impl Builder {
             output_vector.push("--no-prepend-enum-name".into());
         }
 
+        if self.options.fit_macro_constants {
+            output_vector.push("--fit-macro-constant-types".into());
+        }
+
         if self.options.array_pointers_in_arguments {
             output_vector.push("--use-array-pointers-in-arguments".into());
         }
@@ -476,6 +496,14 @@ impl Builder {
         for line in &self.options.raw_lines {
             output_vector.push("--raw-line".into());
             output_vector.push(line.clone());
+        }
+
+        for (module, lines) in &self.options.module_lines {
+            for line in lines.iter() {
+                output_vector.push("--module-raw-line".into());
+                output_vector.push(module.clone());
+                output_vector.push(line.clone());
+            }
         }
 
         if self.options.use_core {
@@ -512,10 +540,13 @@ impl Builder {
             output_vector.push(path.into());
         }
 
-        if self.options.dynamic_library_name.is_some() {
-            let libname = self.options.dynamic_library_name.as_ref().unwrap();
+        if let Some(ref name) = self.options.dynamic_library_name {
             output_vector.push("--dynamic-loading".into());
-            output_vector.push(libname.clone());
+            output_vector.push(name.clone());
+        }
+
+        if self.options.respect_cxx_access_specs {
+            output_vector.push("--respect-cxx-access-specs".into());
         }
 
         // Add clang arguments
@@ -569,8 +600,16 @@ impl Builder {
     ///
     /// The file `name` will be added to the clang arguments.
     pub fn header_contents(mut self, name: &str, contents: &str) -> Builder {
+        // Apparently clang relies on having virtual FS correspondent to
+        // the real one, so we need absolute paths here
+        let absolute_path = env::current_dir()
+            .expect("Cannot retrieve current directory")
+            .join(name)
+            .to_str()
+            .expect("Cannot convert current directory name to string")
+            .to_owned();
         self.input_header_contents
-            .push((name.into(), contents.into()));
+            .push((absolute_path, contents.into()));
         self
     }
 
@@ -1264,6 +1303,12 @@ impl Builder {
         self
     }
 
+    /// Whether to try to fit macro constants to types smaller than u32/i32
+    pub fn fit_macro_constants(mut self, doit: bool) -> Self {
+        self.options.fit_macro_constants = doit;
+        self
+    }
+
     /// Prepend the enum name to constant or newtype variants.
     pub fn prepend_enum_name(mut self, doit: bool) -> Self {
         self.options.prepend_enum_name = doit;
@@ -1341,13 +1386,6 @@ impl Builder {
     /// issues. The resulting file will be named something like `__bindgen.i` or
     /// `__bindgen.ii`
     pub fn dump_preprocessed_input(&self) -> io::Result<()> {
-        fn check_is_cpp(name_file: &str) -> bool {
-            name_file.ends_with(".hpp") ||
-                name_file.ends_with(".hxx") ||
-                name_file.ends_with(".hh") ||
-                name_file.ends_with(".h++")
-        }
-
         let clang =
             clang_sys::support::Clang::find(None, &[]).ok_or_else(|| {
                 io::Error::new(
@@ -1365,7 +1403,7 @@ impl Builder {
 
         // For each input header, add `#include "$header"`.
         for header in &self.input_headers {
-            is_cpp |= check_is_cpp(header);
+            is_cpp |= file_is_cpp(header);
 
             wrapper_contents.push_str("#include \"");
             wrapper_contents.push_str(header);
@@ -1375,7 +1413,7 @@ impl Builder {
         // For each input header content, add a prefix line of `#line 0 "$name"`
         // followed by the contents.
         for &(ref name, ref contents) in &self.input_header_contents {
-            is_cpp |= check_is_cpp(name);
+            is_cpp |= file_is_cpp(name);
 
             wrapper_contents.push_str("#line 0 \"");
             wrapper_contents.push_str(name);
@@ -1482,6 +1520,12 @@ impl Builder {
         dynamic_library_name: T,
     ) -> Self {
         self.options.dynamic_library_name = Some(dynamic_library_name.into());
+        self
+    }
+
+    /// Generate bindings as `pub` only if the bound item is publically accessible by C++.
+    pub fn respect_cxx_access_specs(mut self, doit: bool) -> Self {
+        self.options.respect_cxx_access_specs = doit;
         self
     }
 }
@@ -1719,6 +1763,9 @@ struct BindgenOptions {
     /// Whether to detect include paths using clang_sys.
     detect_include_paths: bool,
 
+    /// Whether to try to fit macro constants into types smaller than u32/i32
+    fit_macro_constants: bool,
+
     /// Whether to prepend the enum name to constant or newtype variants.
     prepend_enum_name: bool,
 
@@ -1768,6 +1815,10 @@ struct BindgenOptions {
     /// The name of the dynamic library (if we are generating bindings for a shared library). If
     /// this is None, no dynamic bindings are created.
     dynamic_library_name: Option<String>,
+
+    /// Only make generated bindings `pub` if the items would be publically accessible
+    /// by C++.
+    respect_cxx_access_specs: bool,
 }
 
 /// TODO(emilio): This is sort of a lie (see the error message that results from
@@ -1889,6 +1940,7 @@ impl Default for BindgenOptions {
             block_extern_crate: false,
             enable_mangling: true,
             detect_include_paths: true,
+            fit_macro_constants: false,
             prepend_enum_name: true,
             time_phases: false,
             record_matches: true,
@@ -1903,6 +1955,7 @@ impl Default for BindgenOptions {
             array_pointers_in_arguments: false,
             wasm_import_module_name: None,
             dynamic_library_name: None,
+            respect_cxx_access_specs: false,
         }
     }
 }
@@ -2069,7 +2122,12 @@ impl Bindings {
             debug!("Found clang: {:?}", clang);
 
             // Whether we are working with C or C++ inputs.
-            let is_cpp = args_are_cpp(&options.clang_args);
+            let is_cpp = args_are_cpp(&options.clang_args) ||
+                options
+                    .input_header
+                    .as_ref()
+                    .map_or(false, |i| file_is_cpp(&i));
+
             let search_paths = if is_cpp {
                 clang.cpp_search_paths
             } else {
@@ -2119,7 +2177,10 @@ impl Bindings {
             }
         }
 
-        for f in options.input_unsaved_files.iter() {
+        for (idx, f) in options.input_unsaved_files.iter().enumerate() {
+            if idx != 0 || options.input_header.is_some() {
+                options.clang_args.push("-include".to_owned());
+            }
             options.clang_args.push(f.name.to_str().unwrap().to_owned())
         }
 
@@ -2176,7 +2237,7 @@ impl Bindings {
     /// Write these bindings as source text to the given `Write`able.
     pub fn write<'a>(&self, mut writer: Box<dyn Write + 'a>) -> io::Result<()> {
         if !self.options.disable_header_comment {
-            let version = Some("0.56.0");
+            let version = Some("0.57.0");
             let header = format!(
                 "/* automatically generated by rust-bindgen {} */\n\n",
                 version.unwrap_or("(unknown version)")
