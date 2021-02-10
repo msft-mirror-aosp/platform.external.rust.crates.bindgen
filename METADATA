@@ -7,13 +7,13 @@ third_party {
   }
   url {
     type: ARCHIVE
-    value: "https://static.crates.io/crates/bindgen/bindgen-0.56.0.crate"
+    value: "https://static.crates.io/crates/bindgen/bindgen-0.57.0.crate"
   }
-  version: "0.56.0"
+  version: "0.57.0"
   license_type: NOTICE
   last_upgrade_date {
-    year: 2020
-    month: 11
-    day: 26
+    year: 2021
+    month: 2
+    day: 9
   }
 }
