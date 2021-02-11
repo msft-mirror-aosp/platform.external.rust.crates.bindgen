@@ -23,7 +23,7 @@ where
     );
 
     let matches = App::new("bindgen")
-        .version(Some("0.56.0").unwrap_or("unknown"))
+        .version(Some("0.57.0").unwrap_or("unknown"))
         .about("Generates Rust bindings from C/C++ headers.")
         .usage("bindgen [FLAGS] [OPTIONS] <header> -- <clang-args>...")
         .args(&[
@@ -316,6 +316,9 @@ where
             Arg::with_name("no-include-path-detection")
                 .long("no-include-path-detection")
                 .help("Do not try to detect default include paths"),
+            Arg::with_name("fit-macro-constant-types")
+                .long("fit-macro-constant-types")
+                .help("Try to fit macro constants into types smaller than u32/i32"),
             Arg::with_name("unstable-rust")
                 .long("unstable-rust")
                 .help("Generate unstable Rust code (deprecated; use --rust-target instead).")
@@ -338,6 +341,13 @@ where
                 .takes_value(true)
                 .multiple(true)
                 .number_of_values(1),
+            Arg::with_name("module-raw-line")
+                .long("module-raw-line")
+                .help("Add a raw line of Rust code to a given module.")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(2)
+                .value_names(&["module-name", "raw-line"]),
             Arg::with_name("rust-target")
                 .long("rust-target")
                 .help(&rust_target_help)
@@ -483,6 +493,9 @@ where
                 .long("dynamic-loading")
                 .takes_value(true)
                 .help("Use dynamic loading mode with the given library name."),
+            Arg::with_name("respect-cxx-access-specs")
+                .long("respect-cxx-access-specs")
+                .help("Makes generated bindings `pub` only for items if the items are publically accessible in C++."),
         ]) // .args()
         .get_matches_from(args);
 
@@ -647,6 +660,10 @@ where
         builder = builder.detect_include_paths(false);
     }
 
+    if matches.is_present("fit-macro-constant-types") {
+        builder = builder.fit_macro_constants(true);
+    }
+
     if matches.is_present("time-phases") {
         builder = builder.time_phases(true);
     }
@@ -766,6 +783,13 @@ where
     if let Some(lines) = matches.values_of("raw-line") {
         for line in lines {
             builder = builder.raw_line(line);
+        }
+    }
+
+    if let Some(mut values) = matches.values_of("module-raw-line") {
+        while let Some(module) = values.next() {
+            let line = values.next().unwrap();
+            builder = builder.module_raw_line(module, line);
         }
     }
 
@@ -892,6 +916,10 @@ where
 
     if let Some(dynamic_library_name) = matches.value_of("dynamic-loading") {
         builder = builder.dynamic_library_name(dynamic_library_name);
+    }
+
+    if matches.is_present("respect-cxx-access-specs") {
+        builder = builder.respect_cxx_access_specs(true);
     }
 
     let verbose = matches.is_present("verbose");
