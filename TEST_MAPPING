@@ -8,7 +8,7 @@
       "name": "libsqlite3-sys_device_test_src_lib"
     },
     {
-      "name": "vpnprofilestore_test"
+      "name": "legacykeystore_test"
     }
   ]
 }
