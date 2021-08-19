@@ -4,7 +4,7 @@ use super::super::codegen::{EnumVariation, CONSTIFIED_ENUM_MODULE_REPR_NAME};
 use super::analysis::{HasVtable, HasVtableResult, Sizedness, SizednessResult};
 use super::annotations::Annotations;
 use super::comment;
-use super::comp::MethodKind;
+use super::comp::{CompKind, MethodKind};
 use super::context::{BindgenContext, ItemId, PartialType, TypeId};
 use super::derive::{
     CanDeriveCopy, CanDeriveDebug, CanDeriveDefault, CanDeriveEq,
@@ -904,6 +904,12 @@ impl Item {
             names.push(base_name);
         }
 
+        if ctx.options().c_naming {
+            if let Some(prefix) = self.c_naming_prefix() {
+                names.insert(0, prefix.to_string());
+            }
+        }
+
         let name = names.join("_");
 
         let name = if opt.user_mangled == UserMangled::Yes {
@@ -1053,6 +1059,23 @@ impl Item {
             .collect();
         path.reverse();
         path
+    }
+
+    /// Returns a prefix for the canonical name when C naming is enabled.
+    fn c_naming_prefix(&self) -> Option<&str> {
+        let ty = match self.kind {
+            ItemKind::Type(ref ty) => ty,
+            _ => return None,
+        };
+
+        Some(match ty.kind() {
+            TypeKind::Comp(ref ci) => match ci.kind() {
+                CompKind::Struct => "struct",
+                CompKind::Union => "union",
+            },
+            TypeKind::Enum(..) => "enum",
+            _ => return None,
+        })
     }
 }
 
@@ -1415,9 +1438,7 @@ impl ClangItemParser for Item {
                             );
                         }
                         Some(filename) => {
-                            if let Some(cb) = ctx.parse_callbacks() {
-                                cb.include_file(&filename)
-                            }
+                            ctx.include_file(filename);
                         }
                     }
                 }
@@ -1557,6 +1578,18 @@ impl ClangItemParser for Item {
 
             if let Some(param_id) = Item::type_param(None, location, ctx) {
                 return Ok(ctx.build_ty_wrapper(id, param_id, None, ty));
+            }
+        }
+
+        // Treat all types that are declared inside functions as opaque. The Rust binding
+        // won't be able to do anything with them anyway.
+        //
+        // (If we don't do this check here, we can have subtle logic bugs because we generally
+        // ignore function bodies. See issue #2036.)
+        if let Some(ref parent) = ty.declaration().fallible_semantic_parent() {
+            if FunctionKind::from_cursor(parent).is_some() {
+                debug!("Skipping type declared inside function: {:?}", ty);
+                return Ok(Item::new_opaque_type(id, ty, ctx));
             }
         }
 
