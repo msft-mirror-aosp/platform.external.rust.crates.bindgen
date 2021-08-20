@@ -23,13 +23,17 @@ where
     );
 
     let matches = App::new("bindgen")
-        .version(Some("0.58.1").unwrap_or("unknown"))
+        .version(Some("0.59.1").unwrap_or("unknown"))
         .about("Generates Rust bindings from C/C++ headers.")
         .usage("bindgen [FLAGS] [OPTIONS] <header> -- <clang-args>...")
         .args(&[
             Arg::with_name("header")
                 .help("C or C++ header file")
                 .required(true),
+            Arg::with_name("depfile")
+                .long("depfile")
+                .takes_value(true)
+                .help("Path to write depfile to"),
             Arg::with_name("default-enum-style")
                 .long("default-enum-style")
                 .help("The default style of code used to generate enums.")
@@ -509,6 +513,12 @@ where
             Arg::with_name("translate-enum-integer-types")
                 .long("translate-enum-integer-types")
                 .help("Always translate enum integer types to native Rust integer types."),
+            Arg::with_name("c-naming")
+                .long("c-naming")
+                .help("Generate types with C style naming."),
+            Arg::with_name("explicit-padding")
+                .long("explicit-padding")
+                .help("Always output explicit padding fields."),
         ]) // .args()
         .get_matches_from(args);
 
@@ -848,8 +858,14 @@ where
 
     let output = if let Some(path) = matches.value_of("output") {
         let file = File::create(path)?;
+        if let Some(depfile) = matches.value_of("depfile") {
+            builder = builder.depfile(path, depfile);
+        }
         Box::new(io::BufWriter::new(file)) as Box<dyn io::Write>
     } else {
+        if let Some(depfile) = matches.value_of("depfile") {
+            builder = builder.depfile("-", depfile);
+        }
         Box::new(io::BufWriter::new(io::stdout())) as Box<dyn io::Write>
     };
 
@@ -941,6 +957,14 @@ where
 
     if matches.is_present("translate-enum-integer-types") {
         builder = builder.translate_enum_integer_types(true);
+    }
+
+    if matches.is_present("c-naming") {
+        builder = builder.c_naming(true);
+    }
+
+    if matches.is_present("explicit-padding") {
+        builder = builder.explicit_padding(true);
     }
 
     let verbose = matches.is_present("verbose");
