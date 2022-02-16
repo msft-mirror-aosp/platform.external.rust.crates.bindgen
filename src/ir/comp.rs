@@ -1113,17 +1113,21 @@ impl CompInfo {
         }
 
         // empty union case
-        if !self.has_fields() {
+        if self.fields().is_empty() {
             return None;
         }
 
         let mut max_size = 0;
         // Don't allow align(0)
         let mut max_align = 1;
-        self.each_known_field_layout(ctx, |layout| {
-            max_size = cmp::max(max_size, layout.size);
-            max_align = cmp::max(max_align, layout.align);
-        });
+        for field in self.fields() {
+            let field_layout = field.layout(ctx);
+
+            if let Some(layout) = field_layout {
+                max_size = cmp::max(max_size, layout.size);
+                max_align = cmp::max(max_align, layout.align);
+            }
+        }
 
         Some(Layout::new(max_size, max_align))
     }
@@ -1135,45 +1139,8 @@ impl CompInfo {
             CompFields::AfterComputingBitfieldUnits { ref fields, .. } => {
                 fields
             }
-            CompFields::BeforeComputingBitfieldUnits(..) => {
+            CompFields::BeforeComputingBitfieldUnits(_) => {
                 panic!("Should always have computed bitfield units first");
-            }
-        }
-    }
-
-    fn has_fields(&self) -> bool {
-        match self.fields {
-            CompFields::ErrorComputingBitfieldUnits => false,
-            CompFields::AfterComputingBitfieldUnits { ref fields, .. } => {
-                !fields.is_empty()
-            }
-            CompFields::BeforeComputingBitfieldUnits(ref raw_fields) => {
-                !raw_fields.is_empty()
-            }
-        }
-    }
-
-    fn each_known_field_layout(
-        &self,
-        ctx: &BindgenContext,
-        mut callback: impl FnMut(Layout),
-    ) {
-        match self.fields {
-            CompFields::ErrorComputingBitfieldUnits => return,
-            CompFields::AfterComputingBitfieldUnits { ref fields, .. } => {
-                for field in fields.iter() {
-                    if let Some(layout) = field.layout(ctx) {
-                        callback(layout);
-                    }
-                }
-            }
-            CompFields::BeforeComputingBitfieldUnits(ref raw_fields) => {
-                for field in raw_fields.iter() {
-                    let field_ty = ctx.resolve_type(field.0.ty);
-                    if let Some(layout) = field_ty.layout(ctx) {
-                        callback(layout);
-                    }
-                }
             }
         }
     }
@@ -1282,7 +1249,6 @@ impl CompInfo {
         let mut ci = CompInfo::new(kind);
         ci.is_forward_declaration =
             location.map_or(true, |cur| match cur.kind() {
-                CXCursor_ParmDecl => true,
                 CXCursor_StructDecl | CXCursor_UnionDecl |
                 CXCursor_ClassDecl => !cur.is_definition(),
                 _ => false,
@@ -1631,17 +1597,23 @@ impl CompInfo {
         // Even though `libclang` doesn't expose `#pragma packed(...)`, we can
         // detect it through its effects.
         if let Some(parent_layout) = layout {
-            let mut packed = false;
-            self.each_known_field_layout(ctx, |layout| {
-                packed = packed || layout.align > parent_layout.align;
-            });
-            if packed {
+            if self.fields().iter().any(|f| match *f {
+                Field::Bitfields(ref unit) => {
+                    unit.layout().align > parent_layout.align
+                }
+                Field::DataMember(ref data) => {
+                    let field_ty = ctx.resolve_type(data.ty());
+                    field_ty.layout(ctx).map_or(false, |field_ty_layout| {
+                        field_ty_layout.align > parent_layout.align
+                    })
+                }
+            }) {
                 info!("Found a struct that was defined within `#pragma packed(...)`");
                 return true;
-            }
-
-            if self.has_own_virtual_method && parent_layout.align == 1 {
-                return true;
+            } else if self.has_own_virtual_method {
+                if parent_layout.align == 1 {
+                    return true;
+                }
             }
         }
 
@@ -1654,13 +1626,10 @@ impl CompInfo {
     }
 
     /// Compute this compound structure's bitfield allocation units.
-    pub fn compute_bitfield_units(
-        &mut self,
-        ctx: &BindgenContext,
-        layout: Option<&Layout>,
-    ) {
-        let packed = self.is_packed(ctx, layout);
-        self.fields.compute_bitfield_units(ctx, packed)
+    pub fn compute_bitfield_units(&mut self, ctx: &BindgenContext) {
+        // TODO(emilio): If we could detect #pragma packed here we'd fix layout
+        // tests in divide-by-zero-in-struct-layout.rs
+        self.fields.compute_bitfield_units(ctx, self.packed_attr)
     }
 
     /// Assign for each anonymous field a generated name.

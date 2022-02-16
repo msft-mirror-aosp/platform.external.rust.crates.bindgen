@@ -181,9 +181,7 @@ impl<'a> ImplDebug<'a> for Item {
                         format!("{}: Array with length {}", name, len),
                         vec![],
                     ))
-                } else if len < RUST_DERIVE_IN_ARRAY_LIMIT ||
-                    ctx.options().rust_features().larger_arrays
-                {
+                } else if len < RUST_DERIVE_IN_ARRAY_LIMIT {
                     // The simple case
                     debug_print(name, quote! { #name_ident })
                 } else {
