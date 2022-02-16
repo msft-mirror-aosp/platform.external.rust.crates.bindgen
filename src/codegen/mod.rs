@@ -618,18 +618,12 @@ impl CodeGenerator for Var {
             return;
         }
 
-        let mut attrs = vec![];
-        if let Some(comment) = item.comment(ctx) {
-            attrs.push(attributes::doc(comment));
-        }
-
         let ty = self.ty().to_rust_ty_or_opaque(ctx, &());
 
         if let Some(val) = self.val() {
             match *val {
                 VarType::Bool(val) => {
                     result.push(quote! {
-                        #(#attrs)*
                         pub const #canonical_ident : #ty = #val ;
                     });
                 }
@@ -649,7 +643,6 @@ impl CodeGenerator for Var {
                         helpers::ast_ty::uint_expr(val as _)
                     };
                     result.push(quote! {
-                        #(#attrs)*
                         pub const #canonical_ident : #ty = #val ;
                     });
                 }
@@ -667,14 +660,12 @@ impl CodeGenerator for Var {
                         Ok(string) => {
                             let cstr = helpers::ast_ty::cstr_expr(string);
                             result.push(quote! {
-                                #(#attrs)*
                                 pub const #canonical_ident : &'static #ty = #cstr ;
                             });
                         }
                         Err(..) => {
                             let bytes = helpers::ast_ty::byte_array_expr(bytes);
                             result.push(quote! {
-                                #(#attrs)*
                                 pub const #canonical_ident : #ty = #bytes ;
                             });
                         }
@@ -683,7 +674,6 @@ impl CodeGenerator for Var {
                 VarType::Float(f) => {
                     match helpers::ast_ty::float_expr(ctx, f) {
                         Ok(expr) => result.push(quote! {
-                            #(#attrs)*
                             pub const #canonical_ident : #ty = #expr ;
                         }),
                         Err(..) => return,
@@ -691,12 +681,13 @@ impl CodeGenerator for Var {
                 }
                 VarType::Char(c) => {
                     result.push(quote! {
-                        #(#attrs)*
                         pub const #canonical_ident : #ty = #c ;
                     });
                 }
             }
         } else {
+            let mut attrs = vec![];
+
             // If necessary, apply a `#[link_name]` attribute
             let link_name = self.mangled_name().unwrap_or(self.name());
             if !utils::names_will_be_identical_after_mangling(
@@ -1502,10 +1493,7 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
         let mut ctor_impl = quote! {};
 
         // We cannot generate any constructor if the underlying storage can't
-        // implement AsRef<[u8]> / AsMut<[u8]> / etc, or can't derive Default.
-        //
-        // We don't check `larger_arrays` here because Default does still have
-        // the 32 items limitation.
+        // implement AsRef<[u8]> / AsMut<[u8]> / etc.
         let mut generate_ctor = layout.size <= RUST_DERIVE_IN_ARRAY_LIMIT;
 
         let mut access_spec = !fields_should_be_private;
@@ -1515,9 +1503,7 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
                 continue;
             }
 
-            if layout.size > RUST_DERIVE_IN_ARRAY_LIMIT &&
-                !ctx.options().rust_features().larger_arrays
-            {
+            if layout.size > RUST_DERIVE_IN_ARRAY_LIMIT {
                 continue;
             }
 
@@ -1802,14 +1788,6 @@ impl CodeGenerator for CompInfo {
                     (),
                 );
             }
-            // Check whether an explicit padding field is needed
-            // at the end.
-            if let Some(comp_layout) = layout {
-                fields.extend(
-                    struct_layout
-                        .add_tail_padding(&canonical_name, comp_layout),
-                );
-            }
         }
 
         if is_opaque {
@@ -2010,15 +1988,6 @@ impl CodeGenerator for CompInfo {
         let mut derives: Vec<_> = derivable_traits.into();
         derives.extend(item.annotations().derives().iter().map(String::as_str));
 
-        // The custom derives callback may return a list of derive attributes;
-        // add them to the end of the list.
-        let custom_derives;
-        if let Some(cb) = &ctx.options().parse_callbacks {
-            custom_derives = cb.add_derives(&canonical_name);
-            // In most cases this will be a no-op, since custom_derives will be empty.
-            derives.extend(custom_derives.iter().map(|s| s.as_str()));
-        };
-
         if !derives.is_empty() {
             attributes.push(attributes::derives(&derives))
         }
@@ -2218,32 +2187,9 @@ impl CodeGenerator for CompInfo {
 
         if needs_default_impl {
             let prefix = ctx.trait_prefix();
-            let body = if ctx.options().rust_features().maybe_uninit {
-                quote! {
-                    let mut s = ::#prefix::mem::MaybeUninit::<Self>::uninit();
-                    unsafe {
-                        ::#prefix::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-                        s.assume_init()
-                    }
-                }
-            } else {
-                quote! {
-                    unsafe {
-                        let mut s: Self = ::#prefix::mem::uninitialized();
-                        ::#prefix::ptr::write_bytes(&mut s, 0, 1);
-                        s
-                    }
-                }
-            };
-            // Note we use `ptr::write_bytes()` instead of `mem::zeroed()` because the latter does
-            // not necessarily ensure padding bytes are zeroed. Some C libraries are sensitive to
-            // non-zero padding bytes, especially when forwards/backwards compatability is
-            // involved.
             result.push(quote! {
                 impl #generics Default for #ty_for_impl {
-                    fn default() -> Self {
-                        #body
-                    }
+                    fn default() -> Self { unsafe { ::#prefix::mem::zeroed() } }
                 }
             });
         }
@@ -4247,16 +4193,6 @@ pub(crate) fn codegen(
                 Ok(()) => info!(
                     "Your dot file was generated successfully into: {}",
                     path
-                ),
-                Err(e) => warn!("{}", e),
-            }
-        }
-
-        if let Some(spec) = context.options().depfile.as_ref() {
-            match spec.write(context.deps()) {
-                Ok(()) => info!(
-                    "Your depfile was generated successfully into: {}",
-                    spec.depfile_path.display()
                 ),
                 Err(e) => warn!("{}", e),
             }
