@@ -39,6 +39,7 @@ pub struct Type {
 /// traits, and so if we have a type containing an array with more than this
 /// many items, we won't be able to derive common traits on that type.
 ///
+/// We need type-level integers yesterday :'(
 pub const RUST_DERIVE_IN_ARRAY_LIMIT: usize = 32;
 
 impl Type {
