@@ -51,7 +51,6 @@ macro_rules! doc_mod {
 
 mod clang;
 mod codegen;
-mod deps;
 mod features;
 mod ir;
 mod parse;
@@ -558,14 +557,6 @@ impl Builder {
             output_vector.push("--translate-enum-integer-types".into());
         }
 
-        if self.options.c_naming {
-            output_vector.push("--c-naming".into());
-        }
-
-        if self.options.force_explicit_padding {
-            output_vector.push("--explicit-padding".into());
-        }
-
         // Add clang arguments
 
         output_vector.push("--".into());
@@ -610,19 +601,6 @@ impl Builder {
     /// ```
     pub fn header<T: Into<String>>(mut self, header: T) -> Builder {
         self.input_headers.push(header.into());
-        self
-    }
-
-    /// Add a depfile output which will be written alongside the generated bindings.
-    pub fn depfile<H: Into<String>, D: Into<PathBuf>>(
-        mut self,
-        output_module: H,
-        depfile: D,
-    ) -> Builder {
-        self.options.depfile = Some(deps::DepfileSpec {
-            output_module: output_module.into(),
-            depfile_path: depfile.into(),
-        });
         self
     }
 
@@ -1423,22 +1401,11 @@ impl Builder {
         self
     }
 
-    /// If true, always emit explicit padding fields.
-    ///
-    /// If a struct needs to be serialized in its native format (padding bytes
-    /// and all), for example writing it to a file or sending it on the network,
-    /// then this should be enabled, as anything reading the padding bytes of
-    /// a struct may lead to Undefined Behavior.
-    pub fn explicit_padding(mut self, doit: bool) -> Self {
-        self.options.force_explicit_padding = doit;
-        self
-    }
-
     /// Generate the Rust bindings using the options built up thus far.
     pub fn generate(mut self) -> Result<Bindings, ()> {
         // Add any extra arguments from the environment to the clang command line.
         if let Some(extra_clang_args) =
-            get_target_dependent_env_var("BINDGEN_EXTRA_CLANG_ARGS")
+            env::var("BINDGEN_EXTRA_CLANG_ARGS").ok()
         {
             // Try to parse it with shell quoting. If we fail, make it one single big argument.
             if let Some(strings) = shlex::split(&extra_clang_args) {
@@ -1450,13 +1417,11 @@ impl Builder {
 
         // Transform input headers to arguments on the clang command line.
         self.options.input_header = self.input_headers.pop();
-        self.options.extra_input_headers = self.input_headers;
-        self.options.clang_args.extend(
-            self.options.extra_input_headers.iter().flat_map(|header| {
-                iter::once("-include".into())
-                    .chain(iter::once(header.to_string()))
-            }),
-        );
+        self.options
+            .clang_args
+            .extend(self.input_headers.drain(..).flat_map(|header| {
+                iter::once("-include".into()).chain(iter::once(header))
+            }));
 
         self.options.input_unsaved_files.extend(
             self.input_header_contents
@@ -1635,15 +1600,6 @@ impl Builder {
         self.options.translate_enum_integer_types = doit;
         self
     }
-
-    /// Generate types with C style naming.
-    ///
-    /// This will add prefixes to the generated type names. For example instead of a struct `A` we
-    /// will generate struct `struct_A`. Currently applies to structs, unions, and enums.
-    pub fn c_naming(mut self, doit: bool) -> Self {
-        self.options.c_naming = doit;
-        self
-    }
 }
 
 /// Configuration options for generated bindings.
@@ -1667,9 +1623,6 @@ struct BindgenOptions {
 
     /// The explicit rustfmt path.
     rustfmt_path: Option<PathBuf>,
-
-    /// The path to which we should write a Makefile-syntax depfile (if any).
-    depfile: Option<deps::DepfileSpec>,
 
     /// The set of types that we should have bindings for in the generated
     /// code.
@@ -1832,9 +1785,6 @@ struct BindgenOptions {
     /// The input header file.
     input_header: Option<String>,
 
-    /// Any additional input header files.
-    extra_input_headers: Vec<String>,
-
     /// Unsaved files for input.
     input_unsaved_files: Vec<clang::UnsavedFile>,
 
@@ -1949,12 +1899,6 @@ struct BindgenOptions {
 
     /// Always translate enum integer types to native Rust integer types.
     translate_enum_integer_types: bool,
-
-    /// Generate types with C style naming.
-    c_naming: bool,
-
-    /// Always output explicit padding fields
-    force_explicit_padding: bool,
 }
 
 /// TODO(emilio): This is sort of a lie (see the error message that results from
@@ -2019,7 +1963,6 @@ impl Default for BindgenOptions {
             blocklisted_items: Default::default(),
             opaque_types: Default::default(),
             rustfmt_path: Default::default(),
-            depfile: Default::default(),
             allowlisted_types: Default::default(),
             allowlisted_functions: Default::default(),
             allowlisted_vars: Default::default(),
@@ -2065,7 +2008,6 @@ impl Default for BindgenOptions {
             module_lines: HashMap::default(),
             clang_args: vec![],
             input_header: None,
-            extra_input_headers: vec![],
             input_unsaved_files: vec![],
             parse_callbacks: None,
             codegen_config: CodegenConfig::all(),
@@ -2096,8 +2038,6 @@ impl Default for BindgenOptions {
             dynamic_link_require_all: false,
             respect_cxx_access_specs: false,
             translate_enum_integer_types: false,
-            c_naming: false,
-            force_explicit_padding: false,
         }
     }
 }
@@ -2379,7 +2319,7 @@ impl Bindings {
     /// Write these bindings as source text to the given `Write`able.
     pub fn write<'a>(&self, mut writer: Box<dyn Write + 'a>) -> io::Result<()> {
         if !self.options.disable_header_comment {
-            let version = Some("0.59.1");
+            let version = Some("0.58.1");
             let header = format!(
                 "/* automatically generated by rust-bindgen {} */\n\n",
                 version.unwrap_or("(unknown version)")
@@ -2615,21 +2555,6 @@ pub fn clang_version() -> ClangVersion {
         parsed: None,
         full: raw_v.clone(),
     }
-}
-
-/// Looks for the env var `var_${TARGET}`, and falls back to just `var` when it is not found.
-fn get_target_dependent_env_var(var: &str) -> Option<String> {
-    if let Ok(target) = env::var("TARGET") {
-        if let Ok(v) = env::var(&format!("{}_{}", var, target)) {
-            return Some(v);
-        }
-        if let Ok(v) =
-            env::var(&format!("{}_{}", var, target.replace("-", "_")))
-        {
-            return Some(v);
-        }
-    }
-    env::var(var).ok()
 }
 
 /// A ParseCallbacks implementation that will act on file includes by echoing a rerun-if-changed
