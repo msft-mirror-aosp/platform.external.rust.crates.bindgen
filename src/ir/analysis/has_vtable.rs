@@ -79,14 +79,14 @@ pub struct HasVtableAnalysis<'ctx> {
 
 impl<'ctx> HasVtableAnalysis<'ctx> {
     fn consider_edge(kind: EdgeKind) -> bool {
-        // These are the only edges that can affect whether a type has a
-        // vtable or not.
-        matches!(
-            kind,
+        match kind {
+            // These are the only edges that can affect whether a type has a
+            // vtable or not.
             EdgeKind::TypeReference |
-                EdgeKind::BaseMember |
-                EdgeKind::TemplateDeclaration
-        )
+            EdgeKind::BaseMember |
+            EdgeKind::TemplateDeclaration => true,
+            _ => false,
+        }
     }
 
     fn insert<Id: Into<ItemId>>(

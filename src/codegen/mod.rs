@@ -48,6 +48,7 @@ use proc_macro2::{self, Ident, Span};
 use quote::TokenStreamExt;
 
 use crate::{Entry, HashMap, HashSet};
+use std;
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -57,7 +58,7 @@ use std::ops;
 use std::str::FromStr;
 
 // Name of type defined in constified enum module
-pub static CONSTIFIED_ENUM_MODULE_REPR_NAME: &str = "Type";
+pub static CONSTIFIED_ENUM_MODULE_REPR_NAME: &'static str = "Type";
 
 fn top_level_path(
     ctx: &BindgenContext,
@@ -617,18 +618,12 @@ impl CodeGenerator for Var {
             return;
         }
 
-        let mut attrs = vec![];
-        if let Some(comment) = item.comment(ctx) {
-            attrs.push(attributes::doc(comment));
-        }
-
         let ty = self.ty().to_rust_ty_or_opaque(ctx, &());
 
         if let Some(val) = self.val() {
             match *val {
                 VarType::Bool(val) => {
                     result.push(quote! {
-                        #(#attrs)*
                         pub const #canonical_ident : #ty = #val ;
                     });
                 }
@@ -648,7 +643,6 @@ impl CodeGenerator for Var {
                         helpers::ast_ty::uint_expr(val as _)
                     };
                     result.push(quote! {
-                        #(#attrs)*
                         pub const #canonical_ident : #ty = #val ;
                     });
                 }
@@ -665,49 +659,37 @@ impl CodeGenerator for Var {
                     match String::from_utf8(bytes.clone()) {
                         Ok(string) => {
                             let cstr = helpers::ast_ty::cstr_expr(string);
-                            if ctx
-                                .options()
-                                .rust_features
-                                .static_lifetime_elision
-                            {
-                                result.push(quote! {
-                                    #(#attrs)*
-                                    pub const #canonical_ident : &#ty = #cstr ;
-                                });
-                            } else {
-                                result.push(quote! {
-                                    #(#attrs)*
-                                    pub const #canonical_ident : &'static #ty = #cstr ;
-                                });
-                            }
+                            result.push(quote! {
+                                pub const #canonical_ident : &'static #ty = #cstr ;
+                            });
                         }
                         Err(..) => {
                             let bytes = helpers::ast_ty::byte_array_expr(bytes);
                             result.push(quote! {
-                                #(#attrs)*
                                 pub const #canonical_ident : #ty = #bytes ;
                             });
                         }
                     }
                 }
                 VarType::Float(f) => {
-                    if let Ok(expr) = helpers::ast_ty::float_expr(ctx, f) {
-                        result.push(quote! {
-                            #(#attrs)*
+                    match helpers::ast_ty::float_expr(ctx, f) {
+                        Ok(expr) => result.push(quote! {
                             pub const #canonical_ident : #ty = #expr ;
-                        });
+                        }),
+                        Err(..) => return,
                     }
                 }
                 VarType::Char(c) => {
                     result.push(quote! {
-                        #(#attrs)*
                         pub const #canonical_ident : #ty = #c ;
                     });
                 }
             }
         } else {
+            let mut attrs = vec![];
+
             // If necessary, apply a `#[link_name]` attribute
-            let link_name = self.mangled_name().unwrap_or_else(|| self.name());
+            let link_name = self.mangled_name().unwrap_or(self.name());
             if !utils::names_will_be_identical_after_mangling(
                 &canonical_name,
                 link_name,
@@ -765,6 +747,7 @@ impl CodeGenerator for Type {
                 // converted to rust types in fields, arguments, and such.
                 // NOTE(emilio): If you add to this list, make sure to also add
                 // it to BindgenContext::compute_allowlisted_and_codegen_items.
+                return;
             }
             TypeKind::TemplateInstantiation(ref inst) => {
                 inst.codegen(ctx, result, item)
@@ -894,9 +877,12 @@ impl CodeGenerator for Type {
 
                 // We prefer using `pub use` over `pub type` because of:
                 // https://github.com/rust-lang/rust/issues/26264
-                // These are the only characters allowed in simple
-                // paths, eg `good::dogs::Bront`.
-                if inner_rust_type.to_string().chars().all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | ':' | '_' | ' ')) && outer_params.is_empty() &&
+                if inner_rust_type.to_string().chars().all(|c| match c {
+                    // These are the only characters allowed in simple
+                    // paths, eg `good::dogs::Bront`.
+                    'A'..='Z' | 'a'..='z' | '0'..='9' | ':' | '_' | ' ' => true,
+                    _ => false,
+                }) && outer_params.is_empty() &&
                     !is_opaque &&
                     alias_style == AliasVariation::TypeAlias &&
                     inner_item.expect_type().canonical_type(ctx).is_enum()
@@ -1507,10 +1493,7 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
         let mut ctor_impl = quote! {};
 
         // We cannot generate any constructor if the underlying storage can't
-        // implement AsRef<[u8]> / AsMut<[u8]> / etc, or can't derive Default.
-        //
-        // We don't check `larger_arrays` here because Default does still have
-        // the 32 items limitation.
+        // implement AsRef<[u8]> / AsMut<[u8]> / etc.
         let mut generate_ctor = layout.size <= RUST_DERIVE_IN_ARRAY_LIMIT;
 
         let mut access_spec = !fields_should_be_private;
@@ -1520,9 +1503,7 @@ impl<'a> FieldCodegen<'a> for BitfieldUnit {
                 continue;
             }
 
-            if layout.size > RUST_DERIVE_IN_ARRAY_LIMIT &&
-                !ctx.options().rust_features().larger_arrays
-            {
+            if layout.size > RUST_DERIVE_IN_ARRAY_LIMIT {
                 continue;
             }
 
@@ -1772,7 +1753,7 @@ impl CodeGenerator for CompInfo {
 
                 let inner_item = ctx.resolve_item(base.ty);
                 let mut inner = inner_item.to_rust_ty_or_opaque(ctx, &());
-                inner.append_implicit_template_params(ctx, inner_item);
+                inner.append_implicit_template_params(ctx, &inner_item);
                 let field_name = ctx.rust_ident(&base.field_name);
 
                 struct_layout.saw_base(inner_item.expect_type());
@@ -1805,14 +1786,6 @@ impl CodeGenerator for CompInfo {
                     &mut fields,
                     &mut methods,
                     (),
-                );
-            }
-            // Check whether an explicit padding field is needed
-            // at the end.
-            if let Some(comp_layout) = layout {
-                fields.extend(
-                    struct_layout
-                        .add_tail_padding(&canonical_name, comp_layout),
                 );
             }
         }
@@ -2015,22 +1988,8 @@ impl CodeGenerator for CompInfo {
         let mut derives: Vec<_> = derivable_traits.into();
         derives.extend(item.annotations().derives().iter().map(String::as_str));
 
-        // The custom derives callback may return a list of derive attributes;
-        // add them to the end of the list.
-        let custom_derives;
-        if let Some(cb) = &ctx.options().parse_callbacks {
-            custom_derives = cb.add_derives(&canonical_name);
-            // In most cases this will be a no-op, since custom_derives will be empty.
-            derives.extend(custom_derives.iter().map(|s| s.as_str()));
-        };
-
         if !derives.is_empty() {
             attributes.push(attributes::derives(&derives))
-        }
-
-        if item.annotations().must_use_type() || ctx.must_use_type_by_name(item)
-        {
-            attributes.push(attributes::must_use());
         }
 
         let mut tokens = if is_union && struct_layout.is_rust_union() {
@@ -2131,11 +2090,11 @@ impl CodeGenerator for CompInfo {
                                 })
                                 .flat_map(|field| {
                                     let name = field.name().unwrap();
-                                    field.offset().map(|offset| {
+                                    field.offset().and_then(|offset| {
                                         let field_offset = offset / 8;
                                         let field_name = ctx.rust_ident(name);
 
-                                        quote! {
+                                        Some(quote! {
                                             assert_eq!(
                                                 unsafe {
                                                     &(*(::#prefix::ptr::null::<#canonical_ident>())).#field_name as *const _ as usize
@@ -2143,7 +2102,7 @@ impl CodeGenerator for CompInfo {
                                                 #field_offset,
                                                 concat!("Offset of field: ", stringify!(#canonical_ident), "::", stringify!(#field_name))
                                             );
-                                        }
+                                        })
                                     })
                                 })
                                 .collect::<Vec<proc_macro2::TokenStream>>();
@@ -2228,32 +2187,9 @@ impl CodeGenerator for CompInfo {
 
         if needs_default_impl {
             let prefix = ctx.trait_prefix();
-            let body = if ctx.options().rust_features().maybe_uninit {
-                quote! {
-                    let mut s = ::#prefix::mem::MaybeUninit::<Self>::uninit();
-                    unsafe {
-                        ::#prefix::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-                        s.assume_init()
-                    }
-                }
-            } else {
-                quote! {
-                    unsafe {
-                        let mut s: Self = ::#prefix::mem::uninitialized();
-                        ::#prefix::ptr::write_bytes(&mut s, 0, 1);
-                        s
-                    }
-                }
-            };
-            // Note we use `ptr::write_bytes()` instead of `mem::zeroed()` because the latter does
-            // not necessarily ensure padding bytes are zeroed. Some C libraries are sensitive to
-            // non-zero padding bytes, especially when forwards/backwards compatability is
-            // involved.
             result.push(quote! {
                 impl #generics Default for #ty_for_impl {
-                    fn default() -> Self {
-                        #body
-                    }
+                    fn default() -> Self { unsafe { ::#prefix::mem::zeroed() } }
                 }
             });
         }
@@ -2353,7 +2289,7 @@ impl MethodCodegen for Method {
             return;
         }
         let function = function_item.expect_function();
-        let times_seen = function.codegen(ctx, result, function_item);
+        let times_seen = function.codegen(ctx, result, &function_item);
         let times_seen = match times_seen {
             Some(seen) => seen,
             None => return,
@@ -2419,7 +2355,7 @@ impl MethodCodegen for Method {
         }
 
         let mut exprs =
-            helpers::ast_ty::arguments_from_signature(signature, ctx);
+            helpers::ast_ty::arguments_from_signature(&signature, ctx);
 
         let mut stmts = vec![];
 
@@ -2476,7 +2412,8 @@ impl MethodCodegen for Method {
             #( #stmts );*
         };
 
-        let mut attrs = vec![attributes::inline()];
+        let mut attrs = vec![];
+        attrs.push(attributes::inline());
 
         if signature.must_use() &&
             ctx.options().rust_features().must_use_function
@@ -2517,13 +2454,19 @@ pub enum EnumVariation {
 
 impl EnumVariation {
     fn is_rust(&self) -> bool {
-        matches!(*self, EnumVariation::Rust { .. })
+        match *self {
+            EnumVariation::Rust { .. } => true,
+            _ => false,
+        }
     }
 
     /// Both the `Const` and `ModuleConsts` variants will cause this to return
     /// true.
     fn is_const(&self) -> bool {
-        matches!(*self, EnumVariation::Consts | EnumVariation::ModuleConsts)
+        match *self {
+            EnumVariation::Consts | EnumVariation::ModuleConsts => true,
+            _ => false,
+        }
     }
 }
 
@@ -2601,7 +2544,10 @@ impl<'a> EnumBuilder<'a> {
 
     /// Returns true if the builder is for a rustified enum.
     fn is_rust_enum(&self) -> bool {
-        matches!(*self, EnumBuilder::Rust { .. })
+        match *self {
+            EnumBuilder::Rust { .. } => true,
+            _ => false,
+        }
     }
 
     /// Create a new enum given an item builder, a canonical name, a name for
@@ -2998,43 +2944,18 @@ impl CodeGenerator for Enum {
             attrs.push(attributes::doc(comment));
         }
 
-        if item.annotations().must_use_type() || ctx.must_use_type_by_name(item)
-        {
-            attrs.push(attributes::must_use());
-        }
-
         if !variation.is_const() {
             let mut derives = derives_of_item(item, ctx);
-            // For backwards compat, enums always derive Debug/Clone/Eq/PartialEq/Hash, even
+            // For backwards compat, enums always derive Clone/Eq/PartialEq/Hash, even
             // if we don't generate those by default.
-            if !item.annotations().disallow_debug() {
-                derives.insert(DerivableTraits::DEBUG);
-            }
-            if !item.annotations().disallow_copy() {
-                derives.insert(DerivableTraits::COPY);
-            }
             derives.insert(
                 DerivableTraits::CLONE |
+                    DerivableTraits::COPY |
                     DerivableTraits::HASH |
                     DerivableTraits::PARTIAL_EQ |
                     DerivableTraits::EQ,
             );
-            let mut derives: Vec<_> = derives.into();
-            for derive in item.annotations().derives().iter() {
-                if !derives.contains(&derive.as_str()) {
-                    derives.push(derive);
-                }
-            }
-
-            // The custom derives callback may return a list of derive attributes;
-            // add them to the end of the list.
-            let custom_derives;
-            if let Some(cb) = &ctx.options().parse_callbacks {
-                custom_derives = cb.add_derives(&name);
-                // In most cases this will be a no-op, since custom_derives will be empty.
-                derives.extend(custom_derives.iter().map(|s| s.as_str()));
-            };
-
+            let derives: Vec<_> = derives.into();
             attrs.push(attributes::derives(&derives));
         }
 
@@ -3092,7 +3013,7 @@ impl CodeGenerator for Enum {
 
         let constant_mangling_prefix = if ctx.options().prepend_enum_name {
             if enum_ty.name().is_none() {
-                parent_canonical_name.as_deref()
+                parent_canonical_name.as_ref().map(|n| &**n)
             } else {
                 Some(&*name)
             }
@@ -3651,12 +3572,13 @@ impl TryToRustTy for Type {
                     let void = c_void(ctx);
                     return Ok(void.to_ptr(/* is_const = */ false));
                 }
+                let template_params = item
+                    .used_template_params(ctx)
+                    .into_iter()
+                    .filter(|param| param.is_template_param(ctx, &()))
+                    .collect::<Vec<_>>();
 
-                if item.is_opaque(ctx, &()) &&
-                    item.used_template_params(ctx)
-                        .into_iter()
-                        .any(|param| param.is_template_param(ctx, &()))
-                {
+                if item.is_opaque(ctx, &()) && !template_params.is_empty() {
                     self.try_to_opaque(ctx, item)
                 } else if let Some(ty) = self
                     .name()
@@ -3685,8 +3607,10 @@ impl TryToRustTy for Type {
                     inner.into_resolver().through_type_refs().resolve(ctx);
                 let inner_ty = inner.expect_type();
 
-                let is_objc_pointer =
-                    matches!(inner_ty.kind(), TypeKind::ObjCInterface(..));
+                let is_objc_pointer = match inner_ty.kind() {
+                    TypeKind::ObjCInterface(..) => true,
+                    _ => false,
+                };
 
                 // Regardless if we can properly represent the inner type, we
                 // should always generate a proper pointer here, so use
@@ -3819,8 +3743,8 @@ impl TryToRustTy for FunctionSig {
         _: &(),
     ) -> error::Result<proc_macro2::TokenStream> {
         // TODO: we might want to consider ignoring the reference return value.
-        let ret = utils::fnsig_return_ty(ctx, self);
-        let arguments = utils::fnsig_arguments(ctx, self);
+        let ret = utils::fnsig_return_ty(ctx, &self);
+        let arguments = utils::fnsig_arguments(ctx, &self);
         let abi = self.abi();
 
         match abi {
@@ -4062,12 +3986,12 @@ impl CodeGenerator for ObjCInterface {
             impl_items.push(impl_item);
         }
 
+        let instance_method_names: Vec<_> =
+            self.methods().iter().map(|m| m.rust_name()).collect();
+
         for class_method in self.class_methods() {
-            let ambiquity = self
-                .methods()
-                .iter()
-                .map(|m| m.rust_name())
-                .any(|x| x == class_method.rust_name());
+            let ambiquity =
+                instance_method_names.contains(&class_method.rust_name());
             let prefix = if ambiquity { "class_" } else { "" };
             let impl_item = objc_method_codegen(
                 ctx,
@@ -4269,16 +4193,6 @@ pub(crate) fn codegen(
                 Ok(()) => info!(
                     "Your dot file was generated successfully into: {}",
                     path
-                ),
-                Err(e) => warn!("{}", e),
-            }
-        }
-
-        if let Some(spec) = context.options().depfile.as_ref() {
-            match spec.write(context.deps()) {
-                Ok(()) => info!(
-                    "Your depfile was generated successfully into: {}",
-                    spec.depfile_path.display()
                 ),
                 Err(e) => warn!("{}", e),
             }
@@ -4659,7 +4573,7 @@ pub mod utils {
                     TypeKind::Array(t, _) => {
                         let stream =
                             if ctx.options().array_pointers_in_arguments {
-                                arg_ty.to_rust_ty_or_opaque(ctx, arg_item)
+                                arg_ty.to_rust_ty_or_opaque(ctx, &arg_item)
                             } else {
                                 t.to_rust_ty_or_opaque(ctx, &())
                             };
