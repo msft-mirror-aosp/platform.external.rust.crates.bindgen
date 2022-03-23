@@ -111,10 +111,11 @@ impl Method {
 
     /// Is this a virtual method?
     pub fn is_virtual(&self) -> bool {
-        matches!(
-            self.kind,
-            MethodKind::Virtual { .. } | MethodKind::VirtualDestructor { .. }
-        )
+        match self.kind {
+            MethodKind::Virtual { .. } |
+            MethodKind::VirtualDestructor { .. } => true,
+            _ => false,
+        }
     }
 
     /// Is this a static method?
@@ -629,7 +630,7 @@ where
                         bitfield_unit_count,
                         unit_size_in_bits,
                         unit_align,
-                        mem::take(&mut bitfields_in_unit),
+                        mem::replace(&mut bitfields_in_unit, vec![]),
                         packed,
                     );
 
@@ -638,12 +639,15 @@ where
                     offset = 0;
                     unit_align = 0;
                 }
-            } else if offset != 0 &&
-                (bitfield_width == 0 ||
-                    (offset & (bitfield_align * 8 - 1)) + bitfield_width >
-                        bitfield_size * 8)
-            {
-                offset = align_to(offset, bitfield_align * 8);
+            } else {
+                if offset != 0 &&
+                    (bitfield_width == 0 ||
+                        (offset & (bitfield_align * 8 - 1)) +
+                            bitfield_width >
+                            bitfield_size * 8)
+                {
+                    offset = align_to(offset, bitfield_align * 8);
+                }
             }
         }
 
@@ -702,24 +706,24 @@ where
 /// after.
 #[derive(Debug)]
 enum CompFields {
-    Before(Vec<RawField>),
-    After {
+    BeforeComputingBitfieldUnits(Vec<RawField>),
+    AfterComputingBitfieldUnits {
         fields: Vec<Field>,
         has_bitfield_units: bool,
     },
-    Error,
+    ErrorComputingBitfieldUnits,
 }
 
 impl Default for CompFields {
     fn default() -> CompFields {
-        CompFields::Before(vec![])
+        CompFields::BeforeComputingBitfieldUnits(vec![])
     }
 }
 
 impl CompFields {
     fn append_raw_field(&mut self, raw: RawField) {
         match *self {
-            CompFields::Before(ref mut raws) => {
+            CompFields::BeforeComputingBitfieldUnits(ref mut raws) => {
                 raws.push(raw);
             }
             _ => {
@@ -732,7 +736,9 @@ impl CompFields {
 
     fn compute_bitfield_units(&mut self, ctx: &BindgenContext, packed: bool) {
         let raws = match *self {
-            CompFields::Before(ref mut raws) => mem::take(raws),
+            CompFields::BeforeComputingBitfieldUnits(ref mut raws) => {
+                mem::replace(raws, vec![])
+            }
             _ => {
                 panic!("Already computed bitfield units");
             }
@@ -742,23 +748,25 @@ impl CompFields {
 
         match result {
             Ok((fields, has_bitfield_units)) => {
-                *self = CompFields::After {
+                *self = CompFields::AfterComputingBitfieldUnits {
                     fields,
                     has_bitfield_units,
                 };
             }
             Err(()) => {
-                *self = CompFields::Error;
+                *self = CompFields::ErrorComputingBitfieldUnits;
             }
         }
     }
 
     fn deanonymize_fields(&mut self, ctx: &BindgenContext, methods: &[Method]) {
         let fields = match *self {
-            CompFields::After { ref mut fields, .. } => fields,
+            CompFields::AfterComputingBitfieldUnits {
+                ref mut fields, ..
+            } => fields,
             // Nothing to do here.
-            CompFields::Error => return,
-            CompFields::Before(_) => {
+            CompFields::ErrorComputingBitfieldUnits => return,
+            CompFields::BeforeComputingBitfieldUnits(_) => {
                 panic!("Not yet computed bitfield units.");
             }
         };
@@ -770,7 +778,7 @@ impl CompFields {
         ) -> bool {
             methods.iter().any(|method| {
                 let method_name = ctx.resolve_func(method.signature()).name();
-                method_name == name || ctx.rust_mangle(method_name) == name
+                method_name == name || ctx.rust_mangle(&method_name) == name
             })
         }
 
@@ -812,7 +820,7 @@ impl CompFields {
         for field in fields.iter_mut() {
             match *field {
                 Field::DataMember(FieldData { ref mut name, .. }) => {
-                    if name.is_some() {
+                    if let Some(_) = *name {
                         continue;
                     }
 
@@ -850,13 +858,13 @@ impl Trace for CompFields {
         T: Tracer,
     {
         match *self {
-            CompFields::Error => {}
-            CompFields::Before(ref fields) => {
+            CompFields::ErrorComputingBitfieldUnits => {}
+            CompFields::BeforeComputingBitfieldUnits(ref fields) => {
                 for f in fields {
                     tracer.visit_kind(f.ty().into(), EdgeKind::Field);
                 }
             }
-            CompFields::After { ref fields, .. } => {
+            CompFields::AfterComputingBitfieldUnits { ref fields, .. } => {
                 for f in fields {
                     f.trace(context, tracer, &());
                 }
@@ -892,7 +900,7 @@ pub struct FieldData {
 
 impl FieldMethods for FieldData {
     fn name(&self) -> Option<&str> {
-        self.name.as_deref()
+        self.name.as_ref().map(|n| &**n)
     }
 
     fn ty(&self) -> TypeId {
@@ -900,7 +908,7 @@ impl FieldMethods for FieldData {
     }
 
     fn comment(&self) -> Option<&str> {
-        self.comment.as_deref()
+        self.comment.as_ref().map(|c| &**c)
     }
 
     fn bitfield_width(&self) -> Option<u32> {
@@ -1105,17 +1113,21 @@ impl CompInfo {
         }
 
         // empty union case
-        if !self.has_fields() {
+        if self.fields().is_empty() {
             return None;
         }
 
         let mut max_size = 0;
         // Don't allow align(0)
         let mut max_align = 1;
-        self.each_known_field_layout(ctx, |layout| {
-            max_size = cmp::max(max_size, layout.size);
-            max_align = cmp::max(max_align, layout.align);
-        });
+        for field in self.fields() {
+            let field_layout = field.layout(ctx);
+
+            if let Some(layout) = field_layout {
+                max_size = cmp::max(max_size, layout.size);
+                max_align = cmp::max(max_align, layout.align);
+            }
+        }
 
         Some(Layout::new(max_size, max_align))
     }
@@ -1123,54 +1135,24 @@ impl CompInfo {
     /// Get this type's set of fields.
     pub fn fields(&self) -> &[Field] {
         match self.fields {
-            CompFields::Error => &[],
-            CompFields::After { ref fields, .. } => fields,
-            CompFields::Before(..) => {
+            CompFields::ErrorComputingBitfieldUnits => &[],
+            CompFields::AfterComputingBitfieldUnits { ref fields, .. } => {
+                fields
+            }
+            CompFields::BeforeComputingBitfieldUnits(_) => {
                 panic!("Should always have computed bitfield units first");
-            }
-        }
-    }
-
-    fn has_fields(&self) -> bool {
-        match self.fields {
-            CompFields::Error => false,
-            CompFields::After { ref fields, .. } => !fields.is_empty(),
-            CompFields::Before(ref raw_fields) => !raw_fields.is_empty(),
-        }
-    }
-
-    fn each_known_field_layout(
-        &self,
-        ctx: &BindgenContext,
-        mut callback: impl FnMut(Layout),
-    ) {
-        match self.fields {
-            CompFields::Error => {}
-            CompFields::After { ref fields, .. } => {
-                for field in fields.iter() {
-                    if let Some(layout) = field.layout(ctx) {
-                        callback(layout);
-                    }
-                }
-            }
-            CompFields::Before(ref raw_fields) => {
-                for field in raw_fields.iter() {
-                    let field_ty = ctx.resolve_type(field.0.ty);
-                    if let Some(layout) = field_ty.layout(ctx) {
-                        callback(layout);
-                    }
-                }
             }
         }
     }
 
     fn has_bitfields(&self) -> bool {
         match self.fields {
-            CompFields::Error => false,
-            CompFields::After {
-                has_bitfield_units, ..
+            CompFields::ErrorComputingBitfieldUnits => false,
+            CompFields::AfterComputingBitfieldUnits {
+                has_bitfield_units,
+                ..
             } => has_bitfield_units,
-            CompFields::Before(_) => {
+            CompFields::BeforeComputingBitfieldUnits(_) => {
                 panic!("Should always have computed bitfield units first");
             }
         }
@@ -1267,7 +1249,6 @@ impl CompInfo {
         let mut ci = CompInfo::new(kind);
         ci.is_forward_declaration =
             location.map_or(true, |cur| match cur.kind() {
-                CXCursor_ParmDecl => true,
                 CXCursor_StructDecl | CXCursor_UnionDecl |
                 CXCursor_ClassDecl => !cur.is_definition(),
                 _ => false,
@@ -1393,26 +1374,21 @@ impl CompInfo {
                     let inner = Item::parse(cur, Some(potential_id), ctx)
                         .expect("Inner ClassDecl");
 
-                    // If we avoided recursion parsing this type (in
-                    // `Item::from_ty_with_id()`), then this might not be a
-                    // valid type ID, so check and gracefully handle this.
-                    if ctx.resolve_item_fallible(inner).is_some() {
-                        let inner = inner.expect_type_id(ctx);
+                    let inner = inner.expect_type_id(ctx);
 
-                        ci.inner_types.push(inner);
+                    ci.inner_types.push(inner);
 
-                        // A declaration of an union or a struct without name
-                        // could also be an unnamed field, unfortunately.
-                        if cur.spelling().is_empty() &&
-                            cur.kind() != CXCursor_EnumDecl
-                        {
-                            let ty = cur.cur_type();
-                            let public = cur.public_accessible();
-                            let offset = cur.offset_of_field().ok();
+                    // A declaration of an union or a struct without name could
+                    // also be an unnamed field, unfortunately.
+                    if cur.spelling().is_empty() &&
+                        cur.kind() != CXCursor_EnumDecl
+                    {
+                        let ty = cur.cur_type();
+                        let public = cur.public_accessible();
+                        let offset = cur.offset_of_field().ok();
 
-                            maybe_anonymous_struct_field =
-                                Some((inner, ty, public, offset));
-                        }
+                        maybe_anonymous_struct_field =
+                            Some((inner, ty, public, offset));
                     }
                 }
                 CXCursor_PackedAttr => {
@@ -1621,17 +1597,23 @@ impl CompInfo {
         // Even though `libclang` doesn't expose `#pragma packed(...)`, we can
         // detect it through its effects.
         if let Some(parent_layout) = layout {
-            let mut packed = false;
-            self.each_known_field_layout(ctx, |layout| {
-                packed = packed || layout.align > parent_layout.align;
-            });
-            if packed {
+            if self.fields().iter().any(|f| match *f {
+                Field::Bitfields(ref unit) => {
+                    unit.layout().align > parent_layout.align
+                }
+                Field::DataMember(ref data) => {
+                    let field_ty = ctx.resolve_type(data.ty());
+                    field_ty.layout(ctx).map_or(false, |field_ty_layout| {
+                        field_ty_layout.align > parent_layout.align
+                    })
+                }
+            }) {
                 info!("Found a struct that was defined within `#pragma packed(...)`");
                 return true;
-            }
-
-            if self.has_own_virtual_method && parent_layout.align == 1 {
-                return true;
+            } else if self.has_own_virtual_method {
+                if parent_layout.align == 1 {
+                    return true;
+                }
             }
         }
 
@@ -1644,13 +1626,10 @@ impl CompInfo {
     }
 
     /// Compute this compound structure's bitfield allocation units.
-    pub fn compute_bitfield_units(
-        &mut self,
-        ctx: &BindgenContext,
-        layout: Option<&Layout>,
-    ) {
-        let packed = self.is_packed(ctx, layout);
-        self.fields.compute_bitfield_units(ctx, packed)
+    pub fn compute_bitfield_units(&mut self, ctx: &BindgenContext) {
+        // TODO(emilio): If we could detect #pragma packed here we'd fix layout
+        // tests in divide-by-zero-in-struct-layout.rs
+        self.fields.compute_bitfield_units(ctx, self.packed_attr)
     }
 
     /// Assign for each anonymous field a generated name.
@@ -1761,7 +1740,7 @@ impl IsOpaque for CompInfo {
         // is a type parameter), then we can't compute bitfield units. We are
         // left with no choice but to make the whole struct opaque, or else we
         // might generate structs with incorrect sizes and alignments.
-        if let CompFields::Error = self.fields {
+        if let CompFields::ErrorComputingBitfieldUnits = self.fields {
             return true;
         }
 

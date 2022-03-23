@@ -89,10 +89,12 @@ impl ObjCInterface {
     pub fn rust_name(&self) -> String {
         if let Some(ref cat) = self.category {
             format!("{}_{}", self.name(), cat)
-        } else if self.is_protocol {
-            format!("P{}", self.name())
         } else {
-            format!("I{}", self.name().to_owned())
+            if self.is_protocol {
+                format!("P{}", self.name())
+            } else {
+                format!("I{}", self.name().to_owned())
+            }
         }
     }
 
@@ -147,34 +149,28 @@ impl ObjCInterface {
                     // Gather protocols this interface conforms to
                     let needle = format!("P{}", c.spelling());
                     let items_map = ctx.items();
-                    debug!(
-                        "Interface {} conforms to {}, find the item",
-                        interface.name, needle
-                    );
+                    debug!("Interface {} conforms to {}, find the item", interface.name, needle);
 
-                    for (id, item) in items_map {
+                    for (id, item) in items_map
+                    {
                         if let Some(ty) = item.as_type() {
-                            if let TypeKind::ObjCInterface(ref protocol) =
-                                *ty.kind()
-                            {
-                                if protocol.is_protocol {
-                                    debug!(
-                                        "Checking protocol {}, ty.name {:?}",
-                                        protocol.name,
-                                        ty.name()
-                                    );
-                                    if Some(needle.as_ref()) == ty.name() {
-                                        debug!(
-                                            "Found conforming protocol {:?}",
-                                            item
-                                        );
-                                        interface.conforms_to.push(id);
-                                        break;
+                            match *ty.kind() {
+                                TypeKind::ObjCInterface(ref protocol) => {
+                                    if protocol.is_protocol
+                                    {
+                                        debug!("Checking protocol {}, ty.name {:?}", protocol.name, ty.name());
+                                        if Some(needle.as_ref()) == ty.name() {
+                                            debug!("Found conforming protocol {:?}", item);
+                                            interface.conforms_to.push(id);
+                                            break;
+                                        }
                                     }
                                 }
+                                _ => {}
                             }
                         }
                     }
+
                 }
                 CXCursor_ObjCInstanceMethodDecl |
                 CXCursor_ObjCClassMethodDecl => {
@@ -182,10 +178,8 @@ impl ObjCInterface {
                     let signature =
                         FunctionSig::from_ty(&c.cur_type(), &c, ctx)
                             .expect("Invalid function sig");
-                    let is_class_method =
-                        c.kind() == CXCursor_ObjCClassMethodDecl;
-                    let method =
-                        ObjCMethod::new(&name, signature, is_class_method);
+                    let is_class_method = c.kind() == CXCursor_ObjCClassMethodDecl;
+                    let method = ObjCMethod::new(&name, signature, is_class_method);
                     interface.add_method(method);
                 }
                 CXCursor_TemplateTypeParameter => {
@@ -195,7 +189,7 @@ impl ObjCInterface {
                 CXCursor_ObjCSuperClassRef => {
                     let item = Item::from_ty_or_ref(c.cur_type(), c, None, ctx);
                     interface.parent_class = Some(item.into());
-                }
+                },
                 _ => {}
             }
             CXChildVisit_Continue
@@ -224,7 +218,7 @@ impl ObjCMethod {
 
         ObjCMethod {
             name: name.to_owned(),
-            rust_name,
+            rust_name: rust_name.to_owned(),
             signature,
             is_class_method,
         }
@@ -267,7 +261,7 @@ impl ObjCMethod {
             .collect();
 
         // No arguments
-        if args.is_empty() && split_name.len() == 1 {
+        if args.len() == 0 && split_name.len() == 1 {
             let name = &split_name[0];
             return quote! {
                 #name
@@ -275,12 +269,13 @@ impl ObjCMethod {
         }
 
         // Check right amount of arguments
-        assert!(
-            args.len() == split_name.len() - 1,
-            "Incorrect method name or arguments for objc method, {:?} vs {:?}",
-            args,
-            split_name
-        );
+        if args.len() != split_name.len() - 1 {
+            panic!(
+                "Incorrect method name or arguments for objc method, {:?} vs {:?}",
+                args,
+                split_name,
+            );
+        }
 
         // Get arguments without type signatures to pass to `msg_send!`
         let mut args_without_types = vec![];

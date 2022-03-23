@@ -28,9 +28,7 @@ pub enum FunctionKind {
 }
 
 impl FunctionKind {
-    /// Given a clang cursor, return the kind of function it represents, or
-    /// `None` otherwise.
-    pub fn from_cursor(cursor: &clang::Cursor) -> Option<FunctionKind> {
+    fn from_cursor(cursor: &clang::Cursor) -> Option<FunctionKind> {
         // FIXME(emilio): Deduplicate logic with `ir::comp`.
         Some(match cursor.kind() {
             clang_sys::CXCursor_FunctionDecl => FunctionKind::Function,
@@ -123,7 +121,7 @@ impl Function {
 
     /// Get this function's name.
     pub fn mangled_name(&self) -> Option<&str> {
-        self.mangled_name.as_deref()
+        self.mangled_name.as_ref().map(|n| &**n)
     }
 
     /// Get this function's signature type.
@@ -187,7 +185,10 @@ pub enum Abi {
 impl Abi {
     /// Returns whether this Abi is known or not.
     fn is_unknown(&self) -> bool {
-        matches!(*self, Abi::Unknown(..))
+        match *self {
+            Abi::Unknown(..) => true,
+            _ => false,
+        }
     }
 }
 
@@ -337,7 +338,7 @@ fn args_from_ty_and_cursor(
             });
 
             let cursor = arg_cur.unwrap_or(*cursor);
-            let ty = arg_ty.unwrap_or_else(|| cursor.cur_type());
+            let ty = arg_ty.unwrap_or(cursor.cur_type());
             (name, Item::from_ty_or_ref(ty, cursor, None, ctx))
         })
         .collect()
@@ -357,7 +358,7 @@ impl FunctionSig {
             argument_types,
             is_variadic,
             must_use,
-            abi,
+            abi: abi,
         }
     }
 
@@ -408,7 +409,7 @@ impl FunctionSig {
             CXCursor_CXXMethod |
             CXCursor_ObjCInstanceMethodDecl |
             CXCursor_ObjCClassMethodDecl => {
-                args_from_ty_and_cursor(ty, &cursor, ctx)
+                args_from_ty_and_cursor(&ty, &cursor, ctx)
             }
             _ => {
                 // For non-CXCursor_FunctionDecl, visiting the cursor's children
@@ -431,7 +432,7 @@ impl FunctionSig {
                     // right AST for functions tagged as stdcall and such...
                     //
                     // https://bugs.llvm.org/show_bug.cgi?id=45919
-                    args_from_ty_and_cursor(ty, &cursor, ctx)
+                    args_from_ty_and_cursor(&ty, &cursor, ctx)
                 } else {
                     args
                 }
@@ -519,7 +520,7 @@ impl FunctionSig {
             warn!("Unknown calling convention: {:?}", call_conv);
         }
 
-        Ok(Self::new(ret, args, ty.is_variadic(), must_use, abi))
+        Ok(Self::new(ret.into(), args, ty.is_variadic(), must_use, abi))
     }
 
     /// Get this function signature's return type.
@@ -564,7 +565,10 @@ impl FunctionSig {
             return false;
         }
 
-        matches!(self.abi, Abi::C | Abi::Unknown(..))
+        match self.abi {
+            Abi::C | Abi::Unknown(..) => true,
+            _ => false,
+        }
     }
 }
 
@@ -591,13 +595,10 @@ impl ClangSubItemParser for Function {
             return Err(ParseError::Continue);
         }
 
-        if cursor.is_inlined_function() {
-            if !context.options().generate_inline_functions {
-                return Err(ParseError::Continue);
-            }
-            if cursor.is_deleted_function() {
-                return Err(ParseError::Continue);
-            }
+        if !context.options().generate_inline_functions &&
+            cursor.is_inlined_function()
+        {
+            return Err(ParseError::Continue);
         }
 
         let linkage = cursor.linkage();
