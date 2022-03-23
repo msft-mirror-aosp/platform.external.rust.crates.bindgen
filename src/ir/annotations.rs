@@ -25,7 +25,7 @@ pub enum FieldAccessorKind {
 /// documentation:
 ///
 /// http://www.stack.nl/~dimitri/doxygen/manual/docblocks.html
-#[derive(Default, Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Annotations {
     /// Whether this item is marked as opaque. Only applies to types.
     opaque: bool,
@@ -42,8 +42,6 @@ pub struct Annotations {
     disallow_debug: bool,
     /// Manually disable deriving/implement default on this type.
     disallow_default: bool,
-    /// Whether to add a #[must_use] annotation to this type.
-    must_use_type: bool,
     /// Whether fields should be marked as private or not. You can set this on
     /// structs (it will apply to all the fields), or individual fields.
     private_fields: Option<bool>,
@@ -74,6 +72,23 @@ fn parse_accessor(s: &str) -> FieldAccessorKind {
         "unsafe" => FieldAccessorKind::Unsafe,
         "immutable" => FieldAccessorKind::Immutable,
         _ => FieldAccessorKind::Regular,
+    }
+}
+
+impl Default for Annotations {
+    fn default() -> Self {
+        Annotations {
+            opaque: false,
+            hide: false,
+            use_instead_of: None,
+            disallow_copy: false,
+            disallow_debug: false,
+            disallow_default: false,
+            private_fields: None,
+            accessor_kind: None,
+            constify_enum_variant: false,
+            derives: vec![],
+        }
     }
 }
 
@@ -125,7 +140,7 @@ impl Annotations {
     ///
     /// That is, code for `Foo` is used to generate `Bar`.
     pub fn use_instead_of(&self) -> Option<&[String]> {
-        self.use_instead_of.as_deref()
+        self.use_instead_of.as_ref().map(|s| &**s)
     }
 
     /// The list of derives that have been specified in this annotation.
@@ -146,11 +161,6 @@ impl Annotations {
     /// Should we avoid implementing the `Default` trait?
     pub fn disallow_default(&self) -> bool {
         self.disallow_default
-    }
-
-    /// Should this type get a `#[must_use]` annotation?
-    pub fn must_use_type(&self) -> bool {
-        self.must_use_type
     }
 
     /// Should the fields be private?
@@ -180,7 +190,6 @@ impl Annotations {
                     "nocopy" => self.disallow_copy = true,
                     "nodebug" => self.disallow_debug = true,
                     "nodefault" => self.disallow_default = true,
-                    "mustusetype" => self.must_use_type = true,
                     "replaces" => {
                         self.use_instead_of = Some(
                             attr.value.split("::").map(Into::into).collect(),
