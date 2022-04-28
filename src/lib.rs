@@ -89,7 +89,7 @@ type HashSet<K> = ::rustc_hash::FxHashSet<K>;
 pub(crate) use std::collections::hash_map::Entry;
 
 /// Default prefix for the anon fields.
-pub const DEFAULT_ANON_FIELDS_PREFIX: &'static str = "__bindgen_anon_";
+pub const DEFAULT_ANON_FIELDS_PREFIX: &str = "__bindgen_anon_";
 
 fn file_is_cpp(name_file: &str) -> bool {
     name_file.ends_with(".hpp") ||
@@ -308,6 +308,7 @@ impl Builder {
             (&self.options.blocklisted_types, "--blocklist-type"),
             (&self.options.blocklisted_functions, "--blocklist-function"),
             (&self.options.blocklisted_items, "--blocklist-item"),
+            (&self.options.blocklisted_files, "--blocklist-file"),
             (&self.options.opaque_types, "--opaque-type"),
             (&self.options.allowlisted_functions, "--allowlist-function"),
             (&self.options.allowlisted_types, "--allowlist-type"),
@@ -317,6 +318,7 @@ impl Builder {
             (&self.options.no_debug_types, "--no-debug"),
             (&self.options.no_default_types, "--no-default"),
             (&self.options.no_hash_types, "--no-hash"),
+            (&self.options.must_use_types, "--must-use-type"),
         ];
 
         for (set, flag) in regex_sets {
@@ -817,6 +819,13 @@ impl Builder {
     /// [regex](https://docs.rs/regex/*/regex/) docs
     pub fn blocklist_item<T: AsRef<str>>(mut self, arg: T) -> Builder {
         self.options.blocklisted_items.insert(arg);
+        self
+    }
+
+    /// Hide any contents of the given file from the generated bindings,
+    /// regardless of whether it's a type, function, module etc.
+    pub fn blocklist_file<T: AsRef<str>>(mut self, arg: T) -> Builder {
+        self.options.blocklisted_files.insert(arg);
         self
     }
 
@@ -1588,6 +1597,13 @@ impl Builder {
         self
     }
 
+    /// Add `#[must_use]` for the given type. Regular
+    /// expressions are supported.
+    pub fn must_use_type<T: Into<String>>(mut self, arg: T) -> Builder {
+        self.options.must_use_types.insert(arg.into());
+        self
+    }
+
     /// Set whether `arr[size]` should be treated as `*mut T` or `*mut [T; size]` (same for mut)
     pub fn array_pointers_in_arguments(mut self, doit: bool) -> Self {
         self.options.array_pointers_in_arguments = doit;
@@ -1660,6 +1676,10 @@ struct BindgenOptions {
     /// The set of items, regardless of item-type, that have been
     /// blocklisted and should not appear in the generated code.
     blocklisted_items: RegexSet,
+
+    /// The set of files whose contents should be blocklisted and should not
+    /// appear in the generated code.
+    blocklisted_files: RegexSet,
 
     /// The set of types that should be treated as opaque structures in the
     /// generated code.
@@ -1928,6 +1948,9 @@ struct BindgenOptions {
     /// The set of types that we should not derive `Hash` for.
     no_hash_types: RegexSet,
 
+    /// The set of types that we should be annotated with `#[must_use]`.
+    must_use_types: RegexSet,
+
     /// Decide if C arrays should be regular pointers in rust or array pointers
     array_pointers_in_arguments: bool,
 
@@ -1971,6 +1994,7 @@ impl BindgenOptions {
             &mut self.blocklisted_types,
             &mut self.blocklisted_functions,
             &mut self.blocklisted_items,
+            &mut self.blocklisted_files,
             &mut self.opaque_types,
             &mut self.bitfield_enums,
             &mut self.constified_enums,
@@ -1986,6 +2010,7 @@ impl BindgenOptions {
             &mut self.no_debug_types,
             &mut self.no_default_types,
             &mut self.no_hash_types,
+            &mut self.must_use_types,
         ];
         let record_matches = self.record_matches;
         for regex_set in &mut regex_sets {
@@ -2017,6 +2042,7 @@ impl Default for BindgenOptions {
             blocklisted_types: Default::default(),
             blocklisted_functions: Default::default(),
             blocklisted_items: Default::default(),
+            blocklisted_files: Default::default(),
             opaque_types: Default::default(),
             rustfmt_path: Default::default(),
             depfile: Default::default(),
@@ -2090,6 +2116,7 @@ impl Default for BindgenOptions {
             no_debug_types: Default::default(),
             no_default_types: Default::default(),
             no_hash_types: Default::default(),
+            must_use_types: Default::default(),
             array_pointers_in_arguments: false,
             wasm_import_module_name: None,
             dynamic_library_name: None,
@@ -2135,7 +2162,7 @@ pub struct Bindings {
     module: proc_macro2::TokenStream,
 }
 
-pub(crate) const HOST_TARGET: &'static str =
+pub(crate) const HOST_TARGET: &str =
     include_str!(concat!(env!("OUT_DIR"), "/host-target.txt"));
 
 // Some architecture triplets are different between rust and libclang, see #1211
@@ -2143,7 +2170,8 @@ pub(crate) const HOST_TARGET: &'static str =
 fn rust_to_clang_target(rust_target: &str) -> String {
     if rust_target.starts_with("aarch64-apple-") {
         let mut clang_target = "arm64-apple-".to_owned();
-        clang_target.push_str(&rust_target["aarch64-apple-".len()..]);
+        clang_target
+            .push_str(rust_target.strip_prefix("aarch64-apple-").unwrap());
         return clang_target;
     }
     rust_target.to_owned()
@@ -2265,10 +2293,7 @@ impl Bindings {
 
             // Whether we are working with C or C++ inputs.
             let is_cpp = args_are_cpp(&options.clang_args) ||
-                options
-                    .input_header
-                    .as_ref()
-                    .map_or(false, |i| file_is_cpp(&i));
+                options.input_header.as_deref().map_or(false, file_is_cpp);
 
             let search_paths = if is_cpp {
                 clang.cpp_search_paths
@@ -2356,15 +2381,6 @@ impl Bindings {
         })
     }
 
-    /// Convert these bindings into source text (with raw lines prepended).
-    pub fn to_string(&self) -> String {
-        let mut bytes = vec![];
-        self.write(Box::new(&mut bytes) as Box<dyn Write>)
-            .expect("writing to a vec cannot fail");
-        String::from_utf8(bytes)
-            .expect("we should only write bindings that are valid utf-8")
-    }
-
     /// Write these bindings as source text to a file.
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         let file = OpenOptions::new()
@@ -2379,7 +2395,7 @@ impl Bindings {
     /// Write these bindings as source text to the given `Write`able.
     pub fn write<'a>(&self, mut writer: Box<dyn Write + 'a>) -> io::Result<()> {
         if !self.options.disable_header_comment {
-            let version = Some("0.59.1");
+            let version = Some("0.59.2");
             let header = format!(
                 "/* automatically generated by rust-bindgen {} */\n\n",
                 version.unwrap_or("(unknown version)")
@@ -2414,7 +2430,7 @@ impl Bindings {
     }
 
     /// Gets the rustfmt path to rustfmt the generated bindings.
-    fn rustfmt_path<'a>(&'a self) -> io::Result<Cow<'a, PathBuf>> {
+    fn rustfmt_path(&self) -> io::Result<Cow<PathBuf>> {
         debug_assert!(self.options.rustfmt_bindings);
         if let Some(ref p) = self.options.rustfmt_path {
             return Ok(Cow::Borrowed(p));
@@ -2505,6 +2521,18 @@ impl Bindings {
     }
 }
 
+impl std::fmt::Display for Bindings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut bytes = vec![];
+        self.write(Box::new(&mut bytes) as Box<dyn Write>)
+            .expect("writing to a vec cannot fail");
+        f.write_str(
+            std::str::from_utf8(&bytes)
+                .expect("we should only write bindings that are valid utf-8"),
+        )
+    }
+}
+
 /// Determines whether the given cursor is in any of the files matched by the
 /// options.
 fn filter_builtins(ctx: &BindgenContext, cursor: &clang::Cursor) -> bool {
@@ -2553,7 +2581,7 @@ fn parse(context: &mut BindgenContext) -> Result<(), ()> {
     if context.options().emit_ast {
         fn dump_if_not_builtin(cur: &clang::Cursor) -> CXChildVisitResult {
             if !cur.is_builtin() {
-                clang::ast_dump(&cur, 0)
+                clang::ast_dump(cur, 0)
             } else {
                 CXChildVisit_Continue
             }
@@ -2590,26 +2618,19 @@ pub fn clang_version() -> ClangVersion {
     let raw_v: String = clang::extract_clang_version();
     let split_v: Option<Vec<&str>> = raw_v
         .split_whitespace()
-        .filter(|t| t.chars().next().map_or(false, |v| v.is_ascii_digit()))
-        .next()
+        .find(|t| t.chars().next().map_or(false, |v| v.is_ascii_digit()))
         .map(|v| v.split('.').collect());
-    match split_v {
-        Some(v) => {
-            if v.len() >= 2 {
-                let maybe_major = v[0].parse::<u32>();
-                let maybe_minor = v[1].parse::<u32>();
-                match (maybe_major, maybe_minor) {
-                    (Ok(major), Ok(minor)) => {
-                        return ClangVersion {
-                            parsed: Some((major, minor)),
-                            full: raw_v.clone(),
-                        }
-                    }
-                    _ => {}
-                }
+    if let Some(v) = split_v {
+        if v.len() >= 2 {
+            let maybe_major = v[0].parse::<u32>();
+            let maybe_minor = v[1].parse::<u32>();
+            if let (Ok(major), Ok(minor)) = (maybe_major, maybe_minor) {
+                return ClangVersion {
+                    parsed: Some((major, minor)),
+                    full: raw_v.clone(),
+                };
             }
         }
-        None => {}
     };
     ClangVersion {
         parsed: None,
@@ -2635,7 +2656,7 @@ fn get_target_dependent_env_var(var: &str) -> Option<String> {
 /// A ParseCallbacks implementation that will act on file includes by echoing a rerun-if-changed
 /// line
 ///
-/// When running in side a `build.rs` script, this can be used to make cargo invalidate the
+/// When running inside a `build.rs` script, this can be used to make cargo invalidate the
 /// generated bindings whenever any of the files included from the header change:
 /// ```
 /// use bindgen::builder;
