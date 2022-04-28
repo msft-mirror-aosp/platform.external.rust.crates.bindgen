@@ -23,7 +23,7 @@ where
     );
 
     let matches = App::new("bindgen")
-        .version(Some("0.59.1").unwrap_or("unknown"))
+        .version(Some("0.59.2").unwrap_or("unknown"))
         .about("Generates Rust bindings from C/C++ headers.")
         .usage("bindgen [FLAGS] [OPTIONS] <header> -- <clang-args>...")
         .args(&[
@@ -161,6 +161,14 @@ where
                 .long("blocklist-item")
                 .help("Mark <item> as hidden.")
                 .value_name("item")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1),
+            Arg::with_name("blocklist-file")
+                .alias("blacklist-file")
+                .long("blocklist-file")
+                .help("Mark all contents of <path> as hidden.")
+                .value_name("path")
                 .takes_value(true)
                 .multiple(true)
                 .number_of_values(1),
@@ -486,6 +494,13 @@ where
                 .takes_value(true)
                 .multiple(true)
                 .number_of_values(1),
+            Arg::with_name("must-use-type")
+                .long("must-use-type")
+                .help("Add #[must_use] annotation to types matching <regex>.")
+                .value_name("regex")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1),
             Arg::with_name("enable-function-attribute-detection")
                 .long("enable-function-attribute-detection")
                 .help(
@@ -623,6 +638,12 @@ where
         }
     }
 
+    if let Some(hidden_files) = matches.values_of("blocklist-file") {
+        for file in hidden_files {
+            builder = builder.blocklist_file(file);
+        }
+    }
+
     if matches.is_present("builtins") {
         builder = builder.emit_builtins();
     }
@@ -710,7 +731,7 @@ where
 
     if let Some(what_to_generate) = matches.value_of("generate") {
         let mut config = CodegenConfig::empty();
-        for what in what_to_generate.split(",") {
+        for what in what_to_generate.split(',') {
             match what {
                 "functions" => config.insert(CodegenConfig::FUNCTIONS),
                 "types" => config.insert(CodegenConfig::TYPES),
@@ -940,6 +961,12 @@ where
     if let Some(no_hash) = matches.values_of("no-hash") {
         for regex in no_hash {
             builder = builder.no_hash(regex);
+        }
+    }
+
+    if let Some(must_use_type) = matches.values_of("must-use-type") {
+        for regex in must_use_type {
+            builder = builder.must_use_type(regex);
         }
     }
 
