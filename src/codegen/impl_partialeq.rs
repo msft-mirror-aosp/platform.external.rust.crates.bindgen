@@ -2,6 +2,7 @@ use crate::ir::comp::{CompInfo, CompKind, Field, FieldMethods};
 use crate::ir::context::BindgenContext;
 use crate::ir::item::{IsOpaque, Item};
 use crate::ir::ty::{TypeKind, RUST_DERIVE_IN_ARRAY_LIMIT};
+use proc_macro2;
 
 /// Generate a manual implementation of `PartialEq` trait for the
 /// specified compound type.
@@ -50,7 +51,7 @@ pub fn gen_partialeq_impl(
                 }
                 Field::Bitfields(ref bu) => {
                     for bitfield in bu.bitfields() {
-                        if bitfield.name().is_some() {
+                        if let Some(_) = bitfield.name() {
                             let getter_name = bitfield.getter_name();
                             let name_ident = ctx.rust_ident_raw(getter_name);
                             tokens.push(quote! {
@@ -103,7 +104,7 @@ fn gen_field(
         TypeKind::Opaque => quote_equals(name_ident),
 
         TypeKind::TemplateInstantiation(ref inst) => {
-            if inst.is_opaque(ctx, ty_item) {
+            if inst.is_opaque(ctx, &ty_item) {
                 quote! {
                     &self. #name_ident [..] == &other. #name_ident [..]
                 }
@@ -113,9 +114,7 @@ fn gen_field(
         }
 
         TypeKind::Array(_, len) => {
-            if len <= RUST_DERIVE_IN_ARRAY_LIMIT ||
-                ctx.options().rust_features().larger_arrays
-            {
+            if len <= RUST_DERIVE_IN_ARRAY_LIMIT {
                 quote_equals(name_ident)
             } else {
                 quote! {

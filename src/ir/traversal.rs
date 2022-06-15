@@ -24,9 +24,9 @@ impl Edge {
     }
 }
 
-impl From<Edge> for ItemId {
-    fn from(val: Edge) -> Self {
-        val.to
+impl Into<ItemId> for Edge {
+    fn into(self) -> ItemId {
+        self.to
     }
 }
 
@@ -424,10 +424,10 @@ where
         }
 
         ItemTraversal {
-            ctx,
-            seen,
-            queue,
-            predicate,
+            ctx: ctx,
+            seen: seen,
+            queue: queue,
+            predicate: predicate,
             currently_traversing: None,
         }
     }
