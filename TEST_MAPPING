@@ -7,6 +7,9 @@
   ],
   "presubmit": [
     {
+      "name": "keystore2_legacy_blobs_test"
+    },
+    {
       "name": "keystore2_test"
     },
     {
@@ -14,6 +17,9 @@
     }
   ],
   "presubmit-rust": [
+    {
+      "name": "keystore2_legacy_blobs_test"
+    },
     {
       "name": "keystore2_test"
     },
