@@ -20,7 +20,7 @@ rust_library_host {
     ],
     rustlibs: [
         "libbindgen",
-        "libclap",
+        "libclap_deprecated",
         "libenv_logger",
     ],
     compile_multilib: "first",
