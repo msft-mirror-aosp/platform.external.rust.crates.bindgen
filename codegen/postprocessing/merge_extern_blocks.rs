@@ -21,6 +21,7 @@ impl VisitMut for Visitor {
                     abi,
                     brace_token,
                     items: extern_block_items,
+                    unsafety,
                 }) = item
                 {
                     let mut exists = false;
@@ -46,6 +47,7 @@ impl VisitMut for Visitor {
                             abi,
                             brace_token,
                             items: extern_block_items,
+                            unsafety,
                         });
                     }
                 } else {

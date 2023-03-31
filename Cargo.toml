@@ -87,7 +87,7 @@ version = "1.0.1"
 version = "1"
 
 [dependencies.syn]
-version = "1.0.99"
+version = "2"
 features = [
     "full",
     "extra-traits",
