@@ -56,7 +56,7 @@ rust_library_host {
         "which-rustfmt",
     ],
     rustlibs: [
-        "libbitflags-1.3.2",
+        "libbitflags",
         "libcexpr",
         "libclang_sys",
         "liblazy_static",
