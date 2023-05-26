@@ -29,7 +29,6 @@ impl VisitMut for Visitor {
                 Item::ExternCrate(_) => 13,
                 Item::ForeignMod(_) => 14,
                 Item::Macro(_) => 15,
-                Item::Macro2(_) => 16,
                 _ => 18,
             });
         }
