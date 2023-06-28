@@ -66,6 +66,7 @@ rust_library_host {
         "libpeeking_take_while",
         "libprettyplease",
         "libproc_macro2",
+	"libitertools",
         "libquote",
         "libregex",
         "librustc_hash",
