@@ -44,12 +44,10 @@ impl<'a> CSerialize<'a> for Item {
             ItemKind::Function(func) => {
                 func.serialize(ctx, self, stack, writer)
             }
-            kind => {
-                return Err(CodegenError::Serialize {
-                    msg: format!("Cannot serialize item kind {:?}", kind),
-                    loc: get_loc(self),
-                });
-            }
+            kind => Err(CodegenError::Serialize {
+                msg: format!("Cannot serialize item kind {:?}", kind),
+                loc: get_loc(self),
+            }),
         }
     }
 }
@@ -107,36 +105,10 @@ impl<'a> CSerialize<'a> for Function {
         // The function's return type
         let ret_ty = signature.return_type();
 
-        // Write `ret_ty wrap_name(args) asm("wrap_name");`
-        ret_ty.serialize(ctx, (), stack, writer)?;
-        write!(writer, " {}(", wrap_name)?;
-        if args.is_empty() {
-            write!(writer, "void")?;
-        } else {
-            serialize_sep(
-                ", ",
-                args.iter(),
-                ctx,
-                writer,
-                |(name, type_id), ctx, buf| {
-                    type_id.serialize(ctx, (), &mut vec![name.clone()], buf)
-                },
-            )?;
-        }
-        writeln!(writer, ") asm(\"{}\");", wrap_name)?;
-
         // Write `ret_ty wrap_name(args) { return name(arg_names)' }`
         ret_ty.serialize(ctx, (), stack, writer)?;
         write!(writer, " {}(", wrap_name)?;
-        serialize_sep(
-            ", ",
-            args.iter(),
-            ctx,
-            writer,
-            |(name, type_id), _, buf| {
-                type_id.serialize(ctx, (), &mut vec![name.clone()], buf)
-            },
-        )?;
+        serialize_args(&args, ctx, writer)?;
         write!(writer, ") {{ return {}(", name)?;
         serialize_sep(", ", args.iter(), ctx, writer, |(name, _), _, buf| {
             write!(buf, "{}", name).map_err(From::from)
@@ -313,6 +285,14 @@ impl<'a> CSerialize<'a> for Type {
                     CompKind::Union => write!(writer, "union {}", name)?,
                 };
             }
+            TypeKind::Enum(_enum_ty) => {
+                if self.is_const() {
+                    write!(writer, "const ")?;
+                }
+
+                let name = item.canonical_name(ctx);
+                write!(writer, "enum {}", name)?;
+            }
             ty => {
                 return Err(CodegenError::Serialize {
                     msg: format!("Cannot serialize type kind {:?}", ty),
@@ -330,6 +310,28 @@ impl<'a> CSerialize<'a> for Type {
 
         Ok(())
     }
+}
+
+fn serialize_args<W: Write>(
+    args: &[(String, TypeId)],
+    ctx: &BindgenContext,
+    writer: &mut W,
+) -> Result<(), CodegenError> {
+    if args.is_empty() {
+        write!(writer, "void")?;
+    } else {
+        serialize_sep(
+            ", ",
+            args.iter(),
+            ctx,
+            writer,
+            |(name, type_id), ctx, buf| {
+                type_id.serialize(ctx, (), &mut vec![name.clone()], buf)
+            },
+        )?;
+    }
+
+    Ok(())
 }
 
 fn serialize_sep<
