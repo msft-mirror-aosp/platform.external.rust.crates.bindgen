@@ -823,6 +823,38 @@ impl Item {
         }
     }
 
+    /// Get this item's original C++ name, including any containing types, but without
+    /// the namespace name. For nested types, the C++ name differs from the Rust name, e.g.
+    /// a nested C++ type `A::B` would correspond to the Rust type `A_B`.
+    /// If the item or any of its containing types is anonymous, returns None.
+    pub fn original_name(&self, ctx: &BindgenContext) -> Option<String> {
+        let target = ctx.resolve_item(self.name_target(ctx));
+
+        // Get item and all ancestors until the first enclosing namespace.
+        let ancestors: Vec<_> = target
+            .ancestors(ctx)
+            .map(|id| ctx.resolve_item(id))
+            .take_while(|item| !item.is_module())
+            .collect();
+
+        if ancestors.iter().any(|item| item.is_anon()) {
+            return None;
+        }
+
+        let mut names: Vec<_> = ancestors
+            .iter()
+            .map(|item| {
+                let target = ctx.resolve_item(item.name_target(ctx));
+                target.base_name(ctx)
+            })
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        names.reverse();
+
+        Some(names.join("::"))
+    }
+
     /// Get the canonical name without taking into account the replaces
     /// annotation.
     ///

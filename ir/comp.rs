@@ -4,6 +4,7 @@ use super::analysis::Sizedness;
 use super::annotations::Annotations;
 use super::context::{BindgenContext, FunctionId, ItemId, TypeId, VarId};
 use super::dot::DotAttributes;
+use super::function::Visibility;
 use super::item::{IsOpaque, Item};
 use super::layout::Layout;
 use super::template::TemplateParameters;
@@ -70,6 +71,18 @@ impl MethodKind {
             _ => false,
         }
     }
+}
+
+// The kind of C++ special member.
+// TODO: We don't currently cover copy assignment or move assignment operator
+// because libclang doesn't provide a way to query for them.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum SpecialMemberKind {
+    DefaultConstructor,
+    CopyConstructor,
+    MoveConstructor,
+    Destructor,
+    AssignmentOperator,
 }
 
 /// A struct representing a C++ method, either static, normal, or virtual.
@@ -976,6 +989,10 @@ pub(crate) struct CompInfo {
     /// Whether this is a struct or a union.
     kind: CompKind,
 
+    /// The visibility of this struct or union if it was declared inside of
+    /// another type. Top-level types always have public visibility.
+    visibility: Visibility,
+
     /// The members of this struct or union.
     fields: CompFields,
 
@@ -1055,6 +1072,7 @@ impl CompInfo {
     pub(crate) fn new(kind: CompKind) -> Self {
         CompInfo {
             kind,
+            visibility: Visibility::Public,
             fields: CompFields::default(),
             template_params: vec![],
             methods: vec![],
@@ -1166,6 +1184,11 @@ impl CompInfo {
         }
     }
 
+    /// Returns the visibility of the type.
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
+    }
+
     /// Returns whether we have a too large bitfield unit, in which case we may
     /// not be able to derive some of the things we should be able to normally
     /// derive.
@@ -1255,6 +1278,7 @@ impl CompInfo {
         debug!("CompInfo::from_ty({:?}, {:?})", kind, cursor);
 
         let mut ci = CompInfo::new(kind);
+        ci.visibility = Visibility::from(cursor.access_specifier());
         ci.is_forward_declaration =
             location.map_or(true, |cur| match cur.kind() {
                 CXCursor_ParmDecl => true,
