@@ -14,6 +14,7 @@ use super::template::{
 };
 use super::traversal::{EdgeKind, Trace, Tracer};
 use crate::clang::{self, Cursor};
+use crate::ir::function::Visibility;
 use crate::parse::{ParseError, ParseResult};
 use std::borrow::Cow;
 use std::io;
@@ -253,7 +254,9 @@ impl Type {
     ) -> Option<Cow<'a, str>> {
         let name_info = match *self.kind() {
             TypeKind::Pointer(inner) => Some((inner, Cow::Borrowed("ptr"))),
-            TypeKind::Reference(inner) => Some((inner, Cow::Borrowed("ref"))),
+            TypeKind::Reference(inner, _) => {
+                Some((inner, Cow::Borrowed("ref")))
+            }
             TypeKind::Array(inner, length) => {
                 Some((inner, format!("array{}", length).into()))
             }
@@ -538,7 +541,7 @@ impl TemplateParameters for TypeKind {
             TypeKind::Enum(_) |
             TypeKind::Pointer(_) |
             TypeKind::BlockPointer(_) |
-            TypeKind::Reference(_) |
+            TypeKind::Reference(..) |
             TypeKind::UnresolvedTypeRef(..) |
             TypeKind::TypeParam |
             TypeKind::Alias(_) |
@@ -616,7 +619,8 @@ pub(crate) enum TypeKind {
     BlockPointer(TypeId),
 
     /// A reference to a type, as in: int& foo().
-    Reference(TypeId),
+    /// The bool represents whether it's rvalue.
+    Reference(TypeId, bool),
 
     /// An instantiation of an abstract template definition with a set of
     /// concrete template arguments.
@@ -1044,14 +1048,23 @@ impl Type {
                 }
                 // XXX: RValueReference is most likely wrong, but I don't think we
                 // can even add bindings for that, so huh.
-                CXType_RValueReference | CXType_LValueReference => {
+                CXType_LValueReference => {
                     let inner = Item::from_ty_or_ref(
                         ty.pointee_type().unwrap(),
                         location,
                         None,
                         ctx,
                     );
-                    TypeKind::Reference(inner)
+                    TypeKind::Reference(inner, false)
+                }
+                CXType_RValueReference => {
+                    let inner = Item::from_ty_or_ref(
+                        ty.pointee_type().unwrap(),
+                        location,
+                        None,
+                        ctx,
+                    );
+                    TypeKind::Reference(inner, true)
                 }
                 // XXX DependentSizedArray is wrong
                 CXType_VariableArray | CXType_DependentSizedArray => {
@@ -1109,7 +1122,10 @@ impl Type {
                     }
                 }
                 CXType_Enum => {
-                    let enum_ = Enum::from_ty(ty, ctx).expect("Not an enum?");
+                    let visibility =
+                        Visibility::from(cursor.access_specifier());
+                    let enum_ = Enum::from_ty(ty, visibility, ctx)
+                        .expect("Not an enum?");
 
                     if !is_anonymous {
                         let pretty_name = ty.spelling();
@@ -1222,7 +1238,7 @@ impl Trace for Type {
         }
         match *self.kind() {
             TypeKind::Pointer(inner) |
-            TypeKind::Reference(inner) |
+            TypeKind::Reference(inner, _) |
             TypeKind::Array(inner, _) |
             TypeKind::Vector(inner, _) |
             TypeKind::BlockPointer(inner) |

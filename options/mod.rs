@@ -153,6 +153,61 @@ macro_rules! options {
 }
 
 options! {
+    /// Whether to specify the type of a virtual function receiver
+    use_specific_virtual_function_receiver: bool {
+        methods: {
+            /// Normally, virtual functions have void* as their 'this' type.
+            /// If this flag is enabled, override that behavior to indicate a
+            /// pointer of the specific type.
+            /// Disabled by default.
+            pub fn use_specific_virtual_function_receiver(mut self, doit: bool) -> Builder {
+                self.options.use_specific_virtual_function_receiver = doit;
+                self
+            }
+        },
+        as_args: "--use-specific-virtual-function-receiver",
+    },
+
+    /// Whether we should emit C++ semantics attributes.
+    cpp_semantic_attributes: bool {
+        methods: {
+            /// If this is true, add attributes with details of underlying C++ semantics.
+            /// Disabled by default.
+            pub fn cpp_semantic_attributes(mut self, doit: bool) -> Builder {
+                self.options.cpp_semantic_attributes = doit;
+                self
+            }
+        },
+        as_args: "--cpp-semantic-attributes",
+    },
+
+    /// Whether we should output information about C++ overloaded operators.
+    represent_cxx_operators: bool {
+        methods: {
+            /// If this is true, output existence of C++ overloaded operators.
+            /// At present, only operator= is noted.
+            /// Disabled by default.
+            pub fn represent_cxx_operators(mut self, doit: bool) -> Builder {
+                self.options.represent_cxx_operators = doit;
+                self
+            }
+        },
+        as_args: "--represent-cxx-operators",
+    },
+
+    /// Whether we should distinguish between 'char16_t' and 'u16'
+    use_distinct_char16_t: bool {
+        methods: {
+            /// If this is true, denote 'char16_t' as a separate type from 'u16'
+            /// Disabled by default.
+            pub fn use_distinct_char16_t(mut self, doit: bool) -> Builder {
+                self.options.use_distinct_char16_t = doit;
+                self
+            }
+        },
+        as_args: "--use-distinct-char16-t",
+    },
+
     /// Types that have been blocklisted and should not appear anywhere in the generated code.
     blocklisted_types: RegexSet {
         methods: {

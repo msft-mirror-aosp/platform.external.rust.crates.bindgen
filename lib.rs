@@ -1,5 +1,7 @@
 //! Generate Rust bindings for C and C++ libraries.
 //!
+//! This is a slightly forked version for use by `autocxx`.
+//!
 //! Provide a C/C++ header file, receive Rust FFI code to call into C/C++
 //! functions and use types defined in the header.
 //!
@@ -1211,6 +1213,7 @@ fn get_target_dependent_env_var(
 /// When running inside a `build.rs` script, this can be used to make cargo invalidate the
 /// generated bindings whenever any of the files included from the header change:
 /// ```
+/// use autocxx_bindgen as bindgen;
 /// use bindgen::builder;
 /// let bindings = builder()
 ///     .header("path/to/input/header")
