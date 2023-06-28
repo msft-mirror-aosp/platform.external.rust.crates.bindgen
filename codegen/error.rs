@@ -11,6 +11,9 @@ pub(crate) enum Error {
     /// definition that is too difficult for us to understand (like a partial
     /// template specialization).
     InstantiationOfOpaqueType,
+
+    /// Type was a reference not a pointer, but we had nowhere to record that fact.
+    ReferenceButCouldNotRecord,
 }
 
 impl fmt::Display for Error {
@@ -22,6 +25,9 @@ impl fmt::Display for Error {
             Error::InstantiationOfOpaqueType => {
                 "Instantiation of opaque template type or partial template \
                  specialization"
+            }
+            Error::ReferenceButCouldNotRecord => {
+                "Type was a reference in a context where we only expected other types"
             }
         })
     }
