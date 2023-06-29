@@ -1,22 +1,24 @@
 //! Helpers for code generation that don't need macro expansion.
 
-use crate::ir::context::BindgenContext;
+use crate::ir::comp::SpecialMemberKind;
+use crate::ir::function::Visibility;
 use crate::ir::layout::Layout;
+use crate::{ir::context::BindgenContext, BindgenOptions};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::TokenStreamExt;
 
-pub mod attributes {
+pub(crate) mod attributes {
     use proc_macro2::{Ident, Span, TokenStream};
-    use std::str::FromStr;
+    use std::{borrow::Cow, str::FromStr};
 
-    pub fn repr(which: &str) -> TokenStream {
+    pub(crate) fn repr(which: &str) -> TokenStream {
         let which = Ident::new(which, Span::call_site());
         quote! {
             #[repr( #which )]
         }
     }
 
-    pub fn repr_list(which_ones: &[&str]) -> TokenStream {
+    pub(crate) fn repr_list(which_ones: &[&str]) -> TokenStream {
         let which_ones = which_ones
             .iter()
             .cloned()
@@ -26,7 +28,7 @@ pub mod attributes {
         }
     }
 
-    pub fn derives(which_ones: &[&str]) -> TokenStream {
+    pub(crate) fn derives(which_ones: &[&str]) -> TokenStream {
         let which_ones = which_ones
             .iter()
             .cloned()
@@ -36,25 +38,25 @@ pub mod attributes {
         }
     }
 
-    pub fn inline() -> TokenStream {
+    pub(crate) fn inline() -> TokenStream {
         quote! {
             #[inline]
         }
     }
 
-    pub fn must_use() -> TokenStream {
+    pub(crate) fn must_use() -> TokenStream {
         quote! {
             #[must_use]
         }
     }
 
-    pub fn non_exhaustive() -> TokenStream {
+    pub(crate) fn non_exhaustive() -> TokenStream {
         quote! {
             #[non_exhaustive]
         }
     }
 
-    pub fn doc(comment: String) -> TokenStream {
+    pub(crate) fn doc(comment: String) -> TokenStream {
         if comment.is_empty() {
             quote!()
         } else {
@@ -62,19 +64,191 @@ pub mod attributes {
         }
     }
 
-    pub fn link_name(name: &str) -> TokenStream {
+    pub(crate) fn link_name<const MANGLE: bool>(name: &str) -> TokenStream {
         // LLVM mangles the name by default but it's already mangled.
         // Prefixing the name with \u{1} should tell LLVM to not mangle it.
-        let name = format!("\u{1}{}", name);
+        let name: Cow<'_, str> = if MANGLE {
+            name.into()
+        } else {
+            format!("\u{1}{}", name).into()
+        };
+
         quote! {
             #[link_name = #name]
         }
     }
 }
 
+pub trait CppSemanticAttributeCreator {
+    fn do_add(&mut self, ts: TokenStream);
+    fn is_enabled(&self) -> bool;
+
+    fn add(&mut self, tokens: TokenStream) {
+        if self.is_enabled() {
+            self.do_add(quote! {
+                #[cpp_semantics(#tokens)]
+            })
+        }
+    }
+
+    fn add_ident(&mut self, desc: &str) {
+        if self.is_enabled() {
+            let id = Ident::new(desc, Span::call_site());
+            self.add(quote! { #id })
+        }
+    }
+
+    fn special_member(&mut self, kind: SpecialMemberKind) {
+        let kind_str = match kind {
+            SpecialMemberKind::DefaultConstructor => "default_ctor",
+            SpecialMemberKind::CopyConstructor => "copy_ctor",
+            SpecialMemberKind::MoveConstructor => "move_ctor",
+            SpecialMemberKind::Destructor => "dtor",
+            SpecialMemberKind::AssignmentOperator => "assignment_operator",
+        };
+        self.add(quote! {
+            special_member(#kind_str)
+        })
+    }
+
+    fn original_name(&mut self, name: &str) {
+        self.add(quote! {
+            original_name(#name)
+        })
+    }
+
+    fn ret_type_reference(&mut self) {
+        self.add_ident("ret_type_reference")
+    }
+
+    fn ret_type_rvalue_reference(&mut self) {
+        self.add_ident("ret_type_rvalue_reference")
+    }
+
+    fn arg_type_reference(&mut self, arg_name: &Ident) {
+        self.add(quote! {
+            arg_type_reference(#arg_name)
+        })
+    }
+
+    fn field_type_reference(&mut self) {
+        self.add_ident("reference")
+    }
+
+    fn field_type_rvalue_reference(&mut self) {
+        self.add_ident("rvalue_reference")
+    }
+
+    fn is_virtual(&mut self) {
+        self.add_ident("bindgen_virtual")
+    }
+
+    fn arg_type_rvalue_reference(&mut self, arg_name: &Ident) {
+        self.add(quote! {
+            arg_type_rvalue_reference(#arg_name)
+        })
+    }
+
+    fn is_pure_virtual(&mut self) {
+        self.add_ident("pure_virtual")
+    }
+
+    fn visibility(&mut self, visibility: Visibility) {
+        match visibility {
+            Visibility::Protected => self.add_ident("visibility_protected"),
+            Visibility::Private => self.add_ident("visibility_private"),
+            _ => {}
+        }
+    }
+
+    fn incomprehensible_param_in_arg_or_return(&mut self) {
+        self.add_ident("incomprehensible_param_in_arg_or_return")
+    }
+
+    fn discards_template_param(&mut self) {
+        self.add_ident("unused_template_param")
+    }
+
+    fn deleted_fn(&mut self) {
+        self.add_ident("deleted")
+    }
+
+    fn defaulted_fn(&mut self) {
+        self.add_ident("defaulted")
+    }
+
+    fn layout(&mut self, layout: &Layout) {
+        let sz = ast_ty::int_expr(layout.size as i64);
+        let align = ast_ty::int_expr(layout.align as i64);
+        let packed = if layout.packed {
+            quote! { true }
+        } else {
+            quote! { false }
+        };
+        self.add(quote! {
+            layout(#sz, #align, #packed)
+        })
+    }
+}
+
+pub struct CppSemanticAttributeAdder<'a> {
+    enabled: bool,
+    attrs: &'a mut Vec<TokenStream>,
+}
+
+impl<'a> CppSemanticAttributeAdder<'a> {
+    pub(crate) fn new(
+        opts: &BindgenOptions,
+        attrs: &'a mut Vec<TokenStream>,
+    ) -> Self {
+        Self {
+            enabled: opts.cpp_semantic_attributes,
+            attrs,
+        }
+    }
+}
+
+impl<'a> CppSemanticAttributeCreator for CppSemanticAttributeAdder<'a> {
+    fn do_add(&mut self, ts: TokenStream) {
+        self.attrs.push(ts)
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+pub struct CppSemanticAttributeSingle {
+    enabled: bool,
+    attr: TokenStream,
+}
+
+impl CppSemanticAttributeSingle {
+    pub(crate) fn new(opts: &BindgenOptions) -> Self {
+        Self {
+            enabled: opts.cpp_semantic_attributes,
+            attr: quote! {},
+        }
+    }
+
+    pub(crate) fn result(self) -> TokenStream {
+        self.attr
+    }
+}
+
+impl CppSemanticAttributeCreator for CppSemanticAttributeSingle {
+    fn do_add(&mut self, ts: TokenStream) {
+        self.attr = ts;
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
 /// Generates a proper type for a field or type with a given `Layout`, that is,
 /// a type with the correct size and alignment restrictions.
-pub fn blob(ctx: &BindgenContext, layout: Layout) -> TokenStream {
+pub(crate) fn blob(ctx: &BindgenContext, layout: Layout) -> TokenStream {
     let opaque = layout.opaque();
 
     // FIXME(emilio, #412): We fall back to byte alignment, but there are
@@ -105,7 +279,7 @@ pub fn blob(ctx: &BindgenContext, layout: Layout) -> TokenStream {
 }
 
 /// Integer type of the same size as the given `Layout`.
-pub fn integer_type(
+pub(crate) fn integer_type(
     ctx: &BindgenContext,
     layout: Layout,
 ) -> Option<TokenStream> {
@@ -115,7 +289,10 @@ pub fn integer_type(
 }
 
 /// Generates a bitfield allocation unit type for a type with the given `Layout`.
-pub fn bitfield_unit(ctx: &BindgenContext, layout: Layout) -> TokenStream {
+pub(crate) fn bitfield_unit(
+    ctx: &BindgenContext,
+    layout: Layout,
+) -> TokenStream {
     let mut tokens = quote! {};
 
     if ctx.options().enable_cxx_namespaces {
@@ -130,7 +307,7 @@ pub fn bitfield_unit(ctx: &BindgenContext, layout: Layout) -> TokenStream {
     tokens
 }
 
-pub mod ast_ty {
+pub(crate) mod ast_ty {
     use crate::ir::context::BindgenContext;
     use crate::ir::function::FunctionSig;
     use crate::ir::layout::Layout;
@@ -138,7 +315,7 @@ pub mod ast_ty {
     use proc_macro2::{self, TokenStream};
     use std::str::FromStr;
 
-    pub fn c_void(ctx: &BindgenContext) -> TokenStream {
+    pub(crate) fn c_void(ctx: &BindgenContext) -> TokenStream {
         // ctypes_prefix takes precedence
         match ctx.options().ctypes_prefix {
             Some(ref prefix) => {
@@ -159,7 +336,7 @@ pub mod ast_ty {
         }
     }
 
-    pub fn raw_type(ctx: &BindgenContext, name: &str) -> TokenStream {
+    pub(crate) fn raw_type(ctx: &BindgenContext, name: &str) -> TokenStream {
         let ident = ctx.rust_ident_raw(name);
         match ctx.options().ctypes_prefix {
             Some(ref prefix) => {
@@ -184,7 +361,7 @@ pub mod ast_ty {
         }
     }
 
-    pub fn float_kind_rust_type(
+    pub(crate) fn float_kind_rust_type(
         ctx: &BindgenContext,
         fk: FloatKind,
         layout: Option<Layout>,
@@ -229,25 +406,25 @@ pub mod ast_ty {
         }
     }
 
-    pub fn int_expr(val: i64) -> TokenStream {
+    pub(crate) fn int_expr(val: i64) -> TokenStream {
         // Don't use quote! { #val } because that adds the type suffix.
         let val = proc_macro2::Literal::i64_unsuffixed(val);
         quote!(#val)
     }
 
-    pub fn uint_expr(val: u64) -> TokenStream {
+    pub(crate) fn uint_expr(val: u64) -> TokenStream {
         // Don't use quote! { #val } because that adds the type suffix.
         let val = proc_macro2::Literal::u64_unsuffixed(val);
         quote!(#val)
     }
 
-    pub fn byte_array_expr(bytes: &[u8]) -> TokenStream {
+    pub(crate) fn byte_array_expr(bytes: &[u8]) -> TokenStream {
         let mut bytes: Vec<_> = bytes.to_vec();
         bytes.push(0);
         quote! { [ #(#bytes),* ] }
     }
 
-    pub fn cstr_expr(mut string: String) -> TokenStream {
+    pub(crate) fn cstr_expr(mut string: String) -> TokenStream {
         string.push('\0');
         let b = proc_macro2::Literal::byte_string(string.as_bytes());
         quote! {
@@ -255,7 +432,10 @@ pub mod ast_ty {
         }
     }
 
-    pub fn float_expr(ctx: &BindgenContext, f: f64) -> Result<TokenStream, ()> {
+    pub(crate) fn float_expr(
+        ctx: &BindgenContext,
+        f: f64,
+    ) -> Result<TokenStream, ()> {
         if f.is_finite() {
             let val = proc_macro2::Literal::f64_unsuffixed(f);
 
@@ -286,7 +466,7 @@ pub mod ast_ty {
         Err(())
     }
 
-    pub fn arguments_from_signature(
+    pub(crate) fn arguments_from_signature(
         signature: &FunctionSig,
         ctx: &BindgenContext,
     ) -> Vec<TokenStream> {
