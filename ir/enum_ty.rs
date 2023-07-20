@@ -2,6 +2,7 @@
 
 use super::super::codegen::EnumVariation;
 use super::context::{BindgenContext, TypeId};
+use super::function::Visibility;
 use super::item::Item;
 use super::ty::{Type, TypeKind};
 use crate::clang;
@@ -22,7 +23,7 @@ pub enum EnumVariantCustomBehavior {
 
 /// A C/C++ enumeration.
 #[derive(Debug)]
-pub struct Enum {
+pub(crate) struct Enum {
     /// The representation used for this enum; it should be an `IntKind` type or
     /// an alias to one.
     ///
@@ -32,27 +33,40 @@ pub struct Enum {
 
     /// The different variants, with explicit values.
     variants: Vec<EnumVariant>,
+
+    /// The visibility of this enum if it was declared inside of
+    /// another type. Top-level types always have public visibility.
+    pub(crate) visibility: Visibility,
 }
 
 impl Enum {
     /// Construct a new `Enum` with the given representation and variants.
-    pub fn new(repr: Option<TypeId>, variants: Vec<EnumVariant>) -> Self {
-        Enum { repr, variants }
+    pub(crate) fn new(
+        repr: Option<TypeId>,
+        variants: Vec<EnumVariant>,
+        visibility: Visibility,
+    ) -> Self {
+        Enum {
+            repr,
+            variants,
+            visibility,
+        }
     }
 
     /// Get this enumeration's representation.
-    pub fn repr(&self) -> Option<TypeId> {
+    pub(crate) fn repr(&self) -> Option<TypeId> {
         self.repr
     }
 
     /// Get this enumeration's variants.
-    pub fn variants(&self) -> &[EnumVariant] {
+    pub(crate) fn variants(&self) -> &[EnumVariant] {
         &self.variants
     }
 
     /// Construct an enumeration from the given Clang type.
-    pub fn from_ty(
+    pub(crate) fn from_ty(
         ty: &clang::Type,
+        visibility: Visibility,
         ctx: &mut BindgenContext,
     ) -> Result<Self, ParseError> {
         use clang_sys::*;
@@ -144,7 +158,7 @@ impl Enum {
             }
             CXChildVisit_Continue
         });
-        Ok(Enum::new(repr, variants))
+        Ok(Enum::new(repr, variants, visibility))
     }
 
     fn is_matching_enum(
@@ -169,7 +183,7 @@ impl Enum {
     }
 
     /// Returns the final representation of the enum.
-    pub fn computed_enum_variation(
+    pub(crate) fn computed_enum_variation(
         &self,
         ctx: &BindgenContext,
         item: &Item,
@@ -236,7 +250,7 @@ impl Enum {
 
 /// A single enum variant, to be contained only in an enum.
 #[derive(Debug)]
-pub struct EnumVariant {
+pub(crate) struct EnumVariant {
     /// The name of the variant.
     name: String,
 
@@ -268,7 +282,7 @@ pub enum EnumVariantValue {
 
 impl EnumVariant {
     /// Construct a new enumeration variant from the given parts.
-    pub fn new(
+    pub(crate) fn new(
         name: String,
         name_for_allowlisting: String,
         comment: Option<String>,
@@ -285,35 +299,35 @@ impl EnumVariant {
     }
 
     /// Get this variant's name.
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         &self.name
     }
 
     /// Get this variant's name.
-    pub fn name_for_allowlisting(&self) -> &str {
+    pub(crate) fn name_for_allowlisting(&self) -> &str {
         &self.name_for_allowlisting
     }
 
     /// Get this variant's value.
-    pub fn val(&self) -> EnumVariantValue {
+    pub(crate) fn val(&self) -> EnumVariantValue {
         self.val
     }
 
     /// Get this variant's documentation.
-    pub fn comment(&self) -> Option<&str> {
+    pub(crate) fn comment(&self) -> Option<&str> {
         self.comment.as_deref()
     }
 
     /// Returns whether this variant should be enforced to be a constant by code
     /// generation.
-    pub fn force_constification(&self) -> bool {
+    pub(crate) fn force_constification(&self) -> bool {
         self.custom_behavior
             .map_or(false, |b| b == EnumVariantCustomBehavior::Constify)
     }
 
     /// Returns whether the current variant should be hidden completely from the
     /// resulting rust enum.
-    pub fn hidden(&self) -> bool {
+    pub(crate) fn hidden(&self) -> bool {
         self.custom_behavior
             .map_or(false, |b| b == EnumVariantCustomBehavior::Hide)
     }
