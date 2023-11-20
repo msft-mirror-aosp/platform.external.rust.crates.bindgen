@@ -1,6 +1,6 @@
 # This project was upgraded with external_updater.
 # Usage: tools/external_updater/updater.sh update rust/crates/bindgen
-# For more info, check https://cs.android.com/android/platform/superproject/+/master:tools/external_updater/README.md
+# For more info, check https://cs.android.com/android/platform/superproject/+/main:tools/external_updater/README.md
 
 name: "bindgen"
 description: "Automatically generates Rust FFI bindings to C and C++ libraries."
@@ -11,13 +11,13 @@ third_party {
   }
   url {
     type: ARCHIVE
-    value: "https://static.crates.io/crates/bindgen/bindgen-0.65.1.crate"
+    value: "https://static.crates.io/crates/bindgen/bindgen-0.69.1.crate"
   }
-  version: "0.65.1"
+  version: "0.69.1"
   license_type: NOTICE
   last_upgrade_date {
     year: 2023
-    month: 6
-    day: 9
+    month: 11
+    day: 20
   }
 }
