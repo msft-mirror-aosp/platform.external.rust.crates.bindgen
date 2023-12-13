@@ -42,7 +42,7 @@ rust_library_host {
     name: "libbindgen",
     crate_name: "bindgen",
     cargo_env_compat: true,
-    cargo_pkg_version: "0.65.1",
+    cargo_pkg_version: "0.69.1",
     srcs: [
         "lib.rs",
         ":copy_bindgen_build_out",
@@ -50,10 +50,8 @@ rust_library_host {
     edition: "2018",
     features: [
         "__cli",
-        "annotate-snippets",
         "experimental",
         "runtime",
-        "which",
         "which-rustfmt",
     ],
     rustlibs: [
@@ -64,9 +62,7 @@ rust_library_host {
         "liblazy_static",
         "liblazycell",
         "libpeeking_take_while",
-        "libprettyplease",
         "libproc_macro2",
-	"libitertools",
         "libquote",
         "libregex",
         "librustc_hash",
@@ -75,6 +71,4 @@ rust_library_host {
         "libwhich",
     ],
     compile_multilib: "first",
-    product_available: true,
-    vendor_available: true,
 }
