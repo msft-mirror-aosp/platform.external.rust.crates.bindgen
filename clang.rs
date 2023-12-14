@@ -6,6 +6,8 @@
 
 use crate::ir::context::BindgenContext;
 use clang_sys::*;
+use std::cmp;
+
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::hash::Hash;
@@ -496,6 +498,96 @@ impl Cursor {
         }
     }
 
+    /// Traverse all of this cursor's children, sorted by where they appear in source code.
+    ///
+    /// Call the given function on each AST node traversed.
+    pub(crate) fn visit_sorted<Visitor>(
+        &self,
+        ctx: &mut BindgenContext,
+        mut visitor: Visitor,
+    ) where
+        Visitor: FnMut(&mut BindgenContext, Cursor),
+    {
+        // FIXME(#2556): The current source order stuff doesn't account well for different levels
+        // of includes, or includes that show up at the same byte offset because they are passed in
+        // via CLI.
+        const SOURCE_ORDER_ENABLED: bool = false;
+        if !SOURCE_ORDER_ENABLED {
+            return self.visit(|c| {
+                visitor(ctx, c);
+                CXChildVisit_Continue
+            });
+        }
+
+        let mut children = self.collect_children();
+        for child in &children {
+            if child.kind() == CXCursor_InclusionDirective {
+                if let Some(included_file) = child.get_included_file_name() {
+                    let location = child.location();
+                    let (source_file, _, _, offset) = location.location();
+
+                    if let Some(source_file) = source_file.name() {
+                        ctx.add_include(source_file, included_file, offset);
+                    }
+                }
+            }
+        }
+        children
+            .sort_by(|child1, child2| child1.cmp_by_source_order(child2, ctx));
+        for child in children {
+            visitor(ctx, child);
+        }
+    }
+
+    /// Compare source order of two cursors, considering `#include` directives.
+    ///
+    /// Built-in items provided by the compiler (which don't have a source file),
+    /// are sorted first. Remaining files are sorted by their position in the source file.
+    /// If the items' source files differ, they are sorted by the position of the first
+    /// `#include` for their source file. If no source files are included, `None` is returned.
+    fn cmp_by_source_order(
+        &self,
+        other: &Self,
+        ctx: &BindgenContext,
+    ) -> cmp::Ordering {
+        let (file, _, _, offset) = self.location().location();
+        let (other_file, _, _, other_offset) = other.location().location();
+
+        let (file, other_file) = match (file.name(), other_file.name()) {
+            (Some(file), Some(other_file)) => (file, other_file),
+            // Built-in definitions should come first.
+            (Some(_), None) => return cmp::Ordering::Greater,
+            (None, Some(_)) => return cmp::Ordering::Less,
+            (None, None) => return cmp::Ordering::Equal,
+        };
+
+        if file == other_file {
+            // Both items are in the same source file, compare by byte offset.
+            return offset.cmp(&other_offset);
+        }
+
+        let include_location = ctx.included_file_location(&file);
+        let other_include_location = ctx.included_file_location(&other_file);
+        match (include_location, other_include_location) {
+            (Some((file2, offset2)), _) if file2 == other_file => {
+                offset2.cmp(&other_offset)
+            }
+            (Some(_), None) => cmp::Ordering::Greater,
+            (_, Some((other_file2, other_offset2))) if file == other_file2 => {
+                offset.cmp(&other_offset2)
+            }
+            (None, Some(_)) => cmp::Ordering::Less,
+            (Some((file2, offset2)), Some((other_file2, other_offset2))) => {
+                if file2 == other_file2 {
+                    offset2.cmp(&other_offset2)
+                } else {
+                    cmp::Ordering::Equal
+                }
+            }
+            (None, None) => cmp::Ordering::Equal,
+        }
+    }
+
     /// Collect all of this cursor's children into a vec and return them.
     pub(crate) fn collect_children(&self) -> Vec<Cursor> {
         let mut children = vec![];
@@ -831,21 +923,6 @@ impl Cursor {
     /// Is this cursor's referent a struct or class with virtual members?
     pub(crate) fn is_virtual_base(&self) -> bool {
         unsafe { clang_isVirtualBase(self.x) != 0 }
-    }
-
-    // Is this cursor's referent a default constructor?
-    pub fn is_default_constructor(&self) -> bool {
-        unsafe { clang_CXXConstructor_isDefaultConstructor(self.x) != 0 }
-    }
-
-    // Is this cursor's referent a copy constructor?
-    pub fn is_copy_constructor(&self) -> bool {
-        unsafe { clang_CXXConstructor_isCopyConstructor(self.x) != 0 }
-    }
-
-    // Is this cursor's referent a move constructor?
-    pub fn is_move_constructor(&self) -> bool {
-        unsafe { clang_CXXConstructor_isMoveConstructor(self.x) != 0 }
     }
 
     /// Try to evaluate this cursor.
@@ -1736,14 +1813,14 @@ impl TranslationUnit {
     pub(crate) fn parse(
         ix: &Index,
         file: &str,
-        cmd_args: &[String],
+        cmd_args: &[Box<str>],
         unsaved: &[UnsavedFile],
         opts: CXTranslationUnit_Flags,
     ) -> Option<TranslationUnit> {
         let fname = CString::new(file).unwrap();
         let _c_args: Vec<CString> = cmd_args
             .iter()
-            .map(|s| CString::new(s.clone()).unwrap())
+            .map(|s| CString::new(s.as_bytes()).unwrap())
             .collect();
         let c_args: Vec<*const c_char> =
             _c_args.iter().map(|s| s.as_ptr()).collect();
@@ -1846,9 +1923,9 @@ pub(crate) struct UnsavedFile {
 
 impl UnsavedFile {
     /// Construct a new unsaved file with the given `name` and `contents`.
-    pub(crate) fn new(name: String, contents: String) -> UnsavedFile {
-        let name = CString::new(name).unwrap();
-        let contents = CString::new(contents).unwrap();
+    pub(crate) fn new(name: &str, contents: &str) -> UnsavedFile {
+        let name = CString::new(name.as_bytes()).unwrap();
+        let contents = CString::new(contents.as_bytes()).unwrap();
         let x = CXUnsavedFile {
             Filename: name.as_ptr(),
             Contents: contents.as_ptr(),

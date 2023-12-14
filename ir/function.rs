@@ -1,6 +1,6 @@
 //! Intermediate representation for C/C++ functions and methods.
 
-use super::comp::{MethodKind, SpecialMemberKind};
+use super::comp::MethodKind;
 use super::context::{BindgenContext, TypeId};
 use super::dot::DotAttributes;
 use super::item::Item;
@@ -9,9 +9,7 @@ use super::ty::TypeKind;
 use crate::callbacks::{ItemInfo, ItemKind};
 use crate::clang::{self, Attribute};
 use crate::parse::{ClangSubItemParser, ParseError, ParseResult};
-use clang_sys::{
-    self, CXCallingConv, CX_CXXAccessSpecifier, CX_CXXPrivate, CX_CXXProtected,
-};
+use clang_sys::{self, CXCallingConv};
 
 use quote::TokenStreamExt;
 use std::io;
@@ -72,75 +70,6 @@ pub(crate) enum Linkage {
     Internal,
 }
 
-/// Visibility
-#[derive(Debug, Clone, Copy)]
-pub enum Visibility {
-    Public,
-    Protected,
-    Private,
-}
-
-impl From<CX_CXXAccessSpecifier> for Visibility {
-    fn from(access_specifier: CX_CXXAccessSpecifier) -> Self {
-        if access_specifier == CX_CXXPrivate {
-            Visibility::Private
-        } else if access_specifier == CX_CXXProtected {
-            Visibility::Protected
-        } else {
-            Visibility::Public
-        }
-    }
-}
-
-/// Autocxx specialized function information
-#[derive(Debug)]
-pub(crate) struct AutocxxFuncInfo {
-    /// C++ Special member kind, if applicable
-    special_member: Option<SpecialMemberKind>,
-    /// Whether it is private
-    visibility: Visibility,
-    /// =delete
-    is_deleted: bool,
-    /// =default
-    is_defaulted: bool,
-}
-
-impl AutocxxFuncInfo {
-    fn new(
-        special_member: Option<SpecialMemberKind>,
-        visibility: Visibility,
-        is_deleted: bool,
-        is_defaulted: bool,
-    ) -> Self {
-        Self {
-            special_member,
-            visibility,
-            is_deleted,
-            is_defaulted,
-        }
-    }
-
-    /// Get this function's C++ special member kind.
-    pub fn special_member(&self) -> Option<SpecialMemberKind> {
-        self.special_member
-    }
-
-    /// Whether it is private
-    pub fn visibility(&self) -> Visibility {
-        self.visibility
-    }
-
-    /// Whether this is a function that's been deleted (=delete)
-    pub fn deleted_fn(&self) -> bool {
-        self.is_deleted
-    }
-
-    /// Whether this is a function that's been deleted (=default)
-    pub fn defaulted_fn(&self) -> bool {
-        self.is_defaulted
-    }
-}
-
 /// A function declaration, with a signature, arguments, and argument names.
 ///
 /// The argument names vector must be the same length as the ones in the
@@ -164,9 +93,6 @@ pub(crate) struct Function {
 
     /// The linkage of the function.
     linkage: Linkage,
-
-    /// Autocxx extension information
-    autocxx: AutocxxFuncInfo,
 }
 
 impl Function {
@@ -178,7 +104,6 @@ impl Function {
         signature: TypeId,
         kind: FunctionKind,
         linkage: Linkage,
-        autocxx: AutocxxFuncInfo,
     ) -> Self {
         Function {
             name,
@@ -187,7 +112,6 @@ impl Function {
             signature,
             kind,
             linkage,
-            autocxx,
         }
     }
 
@@ -219,26 +143,6 @@ impl Function {
     /// Get this function's linkage.
     pub(crate) fn linkage(&self) -> Linkage {
         self.linkage
-    }
-
-    /// Get this function's C++ special member kind.
-    pub fn special_member(&self) -> Option<SpecialMemberKind> {
-        self.autocxx.special_member()
-    }
-
-    /// Whether it is private
-    pub fn visibility(&self) -> Visibility {
-        self.autocxx.visibility()
-    }
-
-    /// Whether this is a function that's been deleted (=delete)
-    pub fn deleted_fn(&self) -> bool {
-        self.autocxx.deleted_fn()
-    }
-
-    /// Whether this is a function that's been deleted (=default)
-    pub fn defaulted_fn(&self) -> bool {
-        self.autocxx.defaulted_fn()
     }
 }
 
@@ -286,6 +190,8 @@ pub enum Abi {
     Win64,
     /// The "C-unwind" ABI.
     CUnwind,
+    /// The "system" ABI.
+    System,
 }
 
 impl FromStr for Abi {
@@ -302,6 +208,7 @@ impl FromStr for Abi {
             "aapcs" => Ok(Self::Aapcs),
             "win64" => Ok(Self::Win64),
             "C-unwind" => Ok(Self::CUnwind),
+            "system" => Ok(Self::System),
             _ => Err(format!("Invalid or unknown ABI {:?}", s)),
         }
     }
@@ -319,6 +226,7 @@ impl std::fmt::Display for Abi {
             Self::Aapcs => "aapcs",
             Self::Win64 => "win64",
             Self::CUnwind => "C-unwind",
+            Abi::System => "system",
         };
 
         s.fmt(f)
@@ -501,6 +409,11 @@ fn args_from_ty_and_cursor(
 }
 
 impl FunctionSig {
+    /// Get the function name.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Construct a new function signature from the given Clang type.
     pub(crate) fn from_ty(
         ty: &clang::Type,
@@ -517,6 +430,15 @@ impl FunctionSig {
         }
 
         let spelling = cursor.spelling();
+
+        // Don't parse operatorxx functions in C++
+        let is_operator = |spelling: &str| {
+            spelling.starts_with("operator") &&
+                !clang::is_valid_identifier(spelling)
+        };
+        if is_operator(&spelling) {
+            return Err(ParseError::Continue);
+        }
 
         // Constructors of non-type template parameter classes for some reason
         // include the template parameter in their name. Just skip them, since
@@ -600,10 +522,7 @@ impl FunctionSig {
             let is_const = is_method && cursor.method_is_const();
             let is_virtual = is_method && cursor.method_is_virtual();
             let is_static = is_method && cursor.method_is_static();
-            if !is_static &&
-                (!is_virtual ||
-                    ctx.options().use_specific_virtual_function_receiver)
-            {
+            if !is_static && !is_virtual {
                 let parent = cursor.semantic_parent();
                 let class = Item::parse(parent, None, ctx)
                     .expect("Expected to parse the class");
@@ -627,7 +546,7 @@ impl FunctionSig {
                     Item::builtin_type(TypeKind::Pointer(class), false, ctx);
                 args.insert(0, (Some("this".into()), ptr));
             } else if is_virtual {
-                let void = Item::builtin_type(TypeKind::Void, is_const, ctx);
+                let void = Item::builtin_type(TypeKind::Void, false, ctx);
                 let ptr =
                     Item::builtin_type(TypeKind::Pointer(void), false, ctx);
                 args.insert(0, (Some("this".into()), ptr));
@@ -695,10 +614,10 @@ impl FunctionSig {
         &self,
         ctx: &BindgenContext,
         name: Option<&str>,
-    ) -> ClangAbi {
+    ) -> crate::codegen::error::Result<ClangAbi> {
         // FIXME (pvdrz): Try to do this check lazily instead. Maybe store the ABI inside `ctx`
         // instead?.
-        if let Some(name) = name {
+        let abi = if let Some(name) = name {
             if let Some((abi, _)) = ctx
                 .options()
                 .abi_overrides
@@ -718,6 +637,33 @@ impl FunctionSig {
             ClangAbi::Known(*abi)
         } else {
             self.abi
+        };
+
+        match abi {
+            ClangAbi::Known(Abi::ThisCall)
+                if !ctx.options().rust_features().thiscall_abi =>
+            {
+                Err(crate::codegen::error::Error::UnsupportedAbi("thiscall"))
+            }
+            ClangAbi::Known(Abi::Vectorcall)
+                if !ctx.options().rust_features().vectorcall_abi =>
+            {
+                Err(crate::codegen::error::Error::UnsupportedAbi("vectorcall"))
+            }
+            ClangAbi::Known(Abi::CUnwind)
+                if !ctx.options().rust_features().c_unwind_abi =>
+            {
+                Err(crate::codegen::error::Error::UnsupportedAbi("C-unwind"))
+            }
+            ClangAbi::Known(Abi::EfiApi)
+                if !ctx.options().rust_features().abi_efiapi =>
+            {
+                Err(crate::codegen::error::Error::UnsupportedAbi("efiapi"))
+            }
+            ClangAbi::Known(Abi::Win64) if self.is_variadic() => {
+                Err(crate::codegen::error::Error::UnsupportedAbi("Win64"))
+            }
+            abi => Ok(abi),
         }
     }
 
@@ -775,7 +721,9 @@ impl ClangSubItemParser for Function {
             return Err(ParseError::Continue);
         }
 
-        let visibility = Visibility::from(cursor.access_specifier());
+        if cursor.access_specifier() == CX_CXXPrivate {
+            return Err(ParseError::Continue);
+        }
 
         let linkage = cursor.linkage();
         let linkage = match linkage {
@@ -792,6 +740,10 @@ impl ClangSubItemParser for Function {
             if !context.options().generate_inline_functions &&
                 !context.options().wrap_static_fns
             {
+                return Err(ParseError::Continue);
+            }
+
+            if cursor.is_deleted_function() {
                 return Err(ParseError::Continue);
             }
 
@@ -833,23 +785,7 @@ impl ClangSubItemParser for Function {
         }
         assert!(!name.is_empty(), "Empty function name.");
 
-        let operator_suffix = name.strip_prefix("operator");
-        let special_member = if let Some(operator_suffix) = operator_suffix {
-            // We can't represent operatorxx functions as-is because
-            // they are not valid identifiers
-            if context.options().represent_cxx_operators {
-                let (new_suffix, special_member) = match operator_suffix {
-                    "=" => ("equals", SpecialMemberKind::AssignmentOperator),
-                    _ => return Err(ParseError::Continue),
-                };
-                name = format!("operator_{}", new_suffix);
-                Some(special_member)
-            } else {
-                return Err(ParseError::Continue);
-            }
-        } else {
-            None
-        };
+        let mangled_name = cursor_mangling(context, &cursor);
 
         let link_name = context.options().last_callback(|callbacks| {
             callbacks.generated_link_name_override(ItemInfo {
@@ -858,36 +794,13 @@ impl ClangSubItemParser for Function {
             })
         });
 
-        let mangled_name = cursor_mangling(context, &cursor);
-
-        let special_member = special_member.or_else(|| {
-            if cursor.is_default_constructor() {
-                Some(SpecialMemberKind::DefaultConstructor)
-            } else if cursor.is_copy_constructor() {
-                Some(SpecialMemberKind::CopyConstructor)
-            } else if cursor.is_move_constructor() {
-                Some(SpecialMemberKind::MoveConstructor)
-            } else if cursor.kind() == clang_sys::CXCursor_Destructor {
-                Some(SpecialMemberKind::Destructor)
-            } else {
-                None
-            }
-        });
-
-        let autocxx_info = AutocxxFuncInfo::new(
-            special_member,
-            visibility,
-            cursor.is_deleted_function(),
-            cursor.is_defaulted_function(),
-        );
         let function = Self::new(
-            name,
+            name.clone(),
             mangled_name,
             link_name,
             sig,
             kind,
             linkage,
-            autocxx_info,
         );
 
         Ok(ParseResult::New(function, Some(cursor)))
