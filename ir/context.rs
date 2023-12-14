@@ -356,8 +356,16 @@ pub(crate) struct BindgenContext {
     /// This needs to be an std::HashMap because the cexpr API requires it.
     parsed_macros: StdHashMap<Vec<u8>, cexpr::expr::EvalResult>,
 
+    /// A map with all include locations.
+    ///
+    /// This is needed so that items are created in the order they are defined in.
+    ///
+    /// The key is the included file, the value is a pair of the source file and
+    /// the position of the `#include` directive in the source file.
+    includes: StdHashMap<String, (String, usize)>,
+
     /// A set of all the included filenames.
-    deps: BTreeSet<String>,
+    deps: BTreeSet<Box<str>>,
 
     /// The active replacements collected from replaces="xxx" annotations.
     replacements: HashMap<Vec<String>, ItemId>,
@@ -560,6 +568,7 @@ If you encounter an error missing from this list, please file an issue or a PR!"
 
         BindgenContext {
             items: vec![Some(root_module)],
+            includes: Default::default(),
             deps,
             types: Default::default(),
             type_params: Default::default(),
@@ -634,16 +643,33 @@ If you encounter an error missing from this list, please file an issue or a PR!"
         )
     }
 
-    /// Add another path to the set of included files.
-    pub(crate) fn include_file(&mut self, filename: String) {
-        for cb in &self.options().parse_callbacks {
-            cb.include_file(&filename);
-        }
-        self.deps.insert(filename);
+    /// Add the location of the `#include` directive for the `included_file`.
+    pub(crate) fn add_include(
+        &mut self,
+        source_file: String,
+        included_file: String,
+        offset: usize,
+    ) {
+        self.includes
+            .entry(included_file)
+            .or_insert((source_file, offset));
+    }
+
+    /// Get the location of the first `#include` directive for the `included_file`.
+    pub(crate) fn included_file_location(
+        &self,
+        included_file: &str,
+    ) -> Option<(String, usize)> {
+        self.includes.get(included_file).cloned()
+    }
+
+    /// Add an included file.
+    pub(crate) fn add_dep(&mut self, dep: Box<str>) {
+        self.deps.insert(dep);
     }
 
     /// Get any included files.
-    pub(crate) fn deps(&self) -> &BTreeSet<String> {
+    pub(crate) fn deps(&self) -> &BTreeSet<Box<str>> {
         &self.deps
     }
 
@@ -1193,11 +1219,11 @@ If you encounter an error missing from this list, please file an issue or a PR!"
         Ok((ret, self.options))
     }
 
-    /// When the `testing_only_extra_assertions` feature is enabled, this
+    /// When the `__testing_only_extra_assertions` feature is enabled, this
     /// function walks the IR graph and asserts that we do not have any edges
     /// referencing an ItemId for which we do not have an associated IR item.
     fn assert_no_dangling_references(&self) {
-        if cfg!(feature = "testing_only_extra_assertions") {
+        if cfg!(feature = "__testing_only_extra_assertions") {
             for _ in self.assert_no_dangling_item_traversal() {
                 // The iterator's next method does the asserting for us.
             }
@@ -1218,11 +1244,11 @@ If you encounter an error missing from this list, please file an issue or a PR!"
         )
     }
 
-    /// When the `testing_only_extra_assertions` feature is enabled, walk over
+    /// When the `__testing_only_extra_assertions` feature is enabled, walk over
     /// every item and ensure that it is in the children set of one of its
     /// module ancestors.
     fn assert_every_item_in_a_module(&self) {
-        if cfg!(feature = "testing_only_extra_assertions") {
+        if cfg!(feature = "__testing_only_extra_assertions") {
             assert!(self.in_codegen_phase());
             assert!(self.current_module == self.root_module);
 
@@ -1971,9 +1997,6 @@ If you encounter an error missing from this list, please file an issue or a PR!"
             CXType_Short => TypeKind::Int(IntKind::Short),
             CXType_UShort => TypeKind::Int(IntKind::UShort),
             CXType_WChar => TypeKind::Int(IntKind::WChar),
-            CXType_Char16 if self.options().use_distinct_char16_t => {
-                TypeKind::Int(IntKind::Char16)
-            }
             CXType_Char16 => TypeKind::Int(IntKind::U16),
             CXType_Char32 => TypeKind::Int(IntKind::U32),
             CXType_Long => TypeKind::Int(IntKind::Long),
@@ -2320,7 +2343,8 @@ If you encounter an error missing from this list, please file an issue or a PR!"
                     if self.options().allowlisted_types.is_empty() &&
                         self.options().allowlisted_functions.is_empty() &&
                         self.options().allowlisted_vars.is_empty() &&
-                        self.options().allowlisted_files.is_empty()
+                        self.options().allowlisted_files.is_empty() &&
+                        self.options().allowlisted_items.is_empty()
                     {
                         return true;
                     }
@@ -2350,6 +2374,11 @@ If you encounter an error missing from this list, please file an issue or a PR!"
 
                     let name = item.path_for_allowlisting(self)[1..].join("::");
                     debug!("allowlisted_items: testing {:?}", name);
+
+                    if self.options().allowlisted_items.matches(&name) {
+                        return true;
+                    }
+
                     match *item.kind() {
                         ItemKind::Module(..) => true,
                         ItemKind::Function(_) => {
@@ -2472,6 +2501,10 @@ If you encounter an error missing from this list, please file an issue or a PR!"
 
         for item in self.options().allowlisted_types.unmatched_items() {
             unused_regex_diagnostic(item, "--allowlist-type", self);
+        }
+
+        for item in self.options().allowlisted_items.unmatched_items() {
+            unused_regex_diagnostic(item, "--allowlist-items", self);
         }
     }
 
