@@ -5,7 +5,6 @@ use super::context::{BindgenContext, ItemId, TypeId};
 use super::dot::DotAttributes;
 use super::enum_ty::Enum;
 use super::function::FunctionSig;
-use super::int::IntKind;
 use super::item::{IsOpaque, Item};
 use super::layout::{Layout, Opaque};
 use super::objc::ObjCInterface;
@@ -14,10 +13,11 @@ use super::template::{
 };
 use super::traversal::{EdgeKind, Trace, Tracer};
 use crate::clang::{self, Cursor};
-use crate::ir::function::Visibility;
 use crate::parse::{ParseError, ParseResult};
 use std::borrow::Cow;
 use std::io;
+
+pub use super::int::IntKind;
 
 /// The base representation of a type in bindgen.
 ///
@@ -125,6 +125,10 @@ impl Type {
         matches!(self.kind, TypeKind::Enum(..))
     }
 
+    /// Is this void?
+    pub(crate) fn is_void(&self) -> bool {
+        matches!(self.kind, TypeKind::Void)
+    }
     /// Is this either a builtin or named type?
     pub(crate) fn is_builtin_or_type_param(&self) -> bool {
         matches!(
@@ -206,9 +210,10 @@ impl Type {
         self.layout.or_else(|| {
             match self.kind {
                 TypeKind::Comp(ref ci) => ci.layout(ctx),
-                TypeKind::Array(inner, length) if length == 0 => Some(
-                    Layout::new(0, ctx.resolve_type(inner).layout(ctx)?.align),
-                ),
+                TypeKind::Array(inner, 0) => Some(Layout::new(
+                    0,
+                    ctx.resolve_type(inner).layout(ctx)?.align,
+                )),
                 // FIXME(emilio): This is a hack for anonymous union templates.
                 // Use the actual pointer size!
                 TypeKind::Pointer(..) => Some(Layout::new(
@@ -254,9 +259,7 @@ impl Type {
     ) -> Option<Cow<'a, str>> {
         let name_info = match *self.kind() {
             TypeKind::Pointer(inner) => Some((inner, Cow::Borrowed("ptr"))),
-            TypeKind::Reference(inner, _) => {
-                Some((inner, Cow::Borrowed("ref")))
-            }
+            TypeKind::Reference(inner) => Some((inner, Cow::Borrowed("ref"))),
             TypeKind::Array(inner, length) => {
                 Some((inner, format!("array{}", length).into()))
             }
@@ -541,7 +544,7 @@ impl TemplateParameters for TypeKind {
             TypeKind::Enum(_) |
             TypeKind::Pointer(_) |
             TypeKind::BlockPointer(_) |
-            TypeKind::Reference(..) |
+            TypeKind::Reference(_) |
             TypeKind::UnresolvedTypeRef(..) |
             TypeKind::TypeParam |
             TypeKind::Alias(_) |
@@ -619,8 +622,7 @@ pub(crate) enum TypeKind {
     BlockPointer(TypeId),
 
     /// A reference to a type, as in: int& foo().
-    /// The bool represents whether it's rvalue.
-    Reference(TypeId, bool),
+    Reference(TypeId),
 
     /// An instantiation of an abstract template definition with a set of
     /// concrete template arguments.
@@ -1048,23 +1050,14 @@ impl Type {
                 }
                 // XXX: RValueReference is most likely wrong, but I don't think we
                 // can even add bindings for that, so huh.
-                CXType_LValueReference => {
+                CXType_RValueReference | CXType_LValueReference => {
                     let inner = Item::from_ty_or_ref(
                         ty.pointee_type().unwrap(),
                         location,
                         None,
                         ctx,
                     );
-                    TypeKind::Reference(inner, false)
-                }
-                CXType_RValueReference => {
-                    let inner = Item::from_ty_or_ref(
-                        ty.pointee_type().unwrap(),
-                        location,
-                        None,
-                        ctx,
-                    );
-                    TypeKind::Reference(inner, true)
+                    TypeKind::Reference(inner)
                 }
                 // XXX DependentSizedArray is wrong
                 CXType_VariableArray | CXType_DependentSizedArray => {
@@ -1122,10 +1115,7 @@ impl Type {
                     }
                 }
                 CXType_Enum => {
-                    let visibility =
-                        Visibility::from(cursor.access_specifier());
-                    let enum_ = Enum::from_ty(ty, visibility, ctx)
-                        .expect("Not an enum?");
+                    let enum_ = Enum::from_ty(ty, ctx).expect("Not an enum?");
 
                     if !is_anonymous {
                         let pretty_name = ty.spelling();
@@ -1238,7 +1228,7 @@ impl Trace for Type {
         }
         match *self.kind() {
             TypeKind::Pointer(inner) |
-            TypeKind::Reference(inner, _) |
+            TypeKind::Reference(inner) |
             TypeKind::Array(inner, _) |
             TypeKind::Vector(inner, _) |
             TypeKind::BlockPointer(inner) |

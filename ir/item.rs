@@ -98,13 +98,13 @@ pub(crate) trait ItemAncestors {
     fn ancestors<'a>(&self, ctx: &'a BindgenContext) -> ItemAncestorsIter<'a>;
 }
 
-#[cfg(testing_only_extra_assertions)]
+#[cfg(feature = "__testing_only_extra_assertions")]
 type DebugOnlyItemSet = ItemSet;
 
-#[cfg(not(testing_only_extra_assertions))]
+#[cfg(not(feature = "__testing_only_extra_assertions"))]
 struct DebugOnlyItemSet;
 
-#[cfg(not(testing_only_extra_assertions))]
+#[cfg(not(feature = "__testing_only_extra_assertions"))]
 impl DebugOnlyItemSet {
     fn new() -> Self {
         DebugOnlyItemSet
@@ -823,38 +823,6 @@ impl Item {
         }
     }
 
-    /// Get this item's original C++ name, including any containing types, but without
-    /// the namespace name. For nested types, the C++ name differs from the Rust name, e.g.
-    /// a nested C++ type `A::B` would correspond to the Rust type `A_B`.
-    /// If the item or any of its containing types is anonymous, returns None.
-    pub fn original_name(&self, ctx: &BindgenContext) -> Option<String> {
-        let target = ctx.resolve_item(self.name_target(ctx));
-
-        // Get item and all ancestors until the first enclosing namespace.
-        let ancestors: Vec<_> = target
-            .ancestors(ctx)
-            .map(|id| ctx.resolve_item(id))
-            .take_while(|item| !item.is_module())
-            .collect();
-
-        if ancestors.iter().any(|item| item.is_anon()) {
-            return None;
-        }
-
-        let mut names: Vec<_> = ancestors
-            .iter()
-            .map(|item| {
-                let target = ctx.resolve_item(item.name_target(ctx));
-                target.base_name(ctx)
-            })
-            .filter(|name| !name.is_empty())
-            .collect();
-
-        names.reverse();
-
-        Some(names.join("::"))
-    }
-
     /// Get the canonical name without taking into account the replaces
     /// annotation.
     ///
@@ -1492,8 +1460,12 @@ impl Item {
                                 cursor
                             );
                         }
-                        Some(filename) => {
-                            ctx.include_file(filename);
+                        Some(included_file) => {
+                            for cb in &ctx.options().parse_callbacks {
+                                cb.include_file(&included_file);
+                            }
+
+                            ctx.add_dep(included_file.into_boxed_str());
                         }
                     }
                 }

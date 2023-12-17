@@ -31,7 +31,6 @@ use super::context::{BindgenContext, ItemId, TypeId};
 use super::item::{IsOpaque, Item, ItemAncestors};
 use super::traversal::{EdgeKind, Trace, Tracer};
 use crate::clang;
-use itertools::{Either, Itertools};
 
 /// Template declaration (and such declaration's template parameters) related
 /// methods.
@@ -144,9 +143,8 @@ pub(crate) trait TemplateParameters: Sized {
 
     /// Get only the set of template parameters that this item uses. This is a
     /// subset of `all_template_params` and does not necessarily contain any of
-    /// `self_template_params`. If any are unused, true will be returned
-    /// in the second tuple element
-    fn used_template_params(&self, ctx: &BindgenContext) -> (Vec<TypeId>, bool)
+    /// `self_template_params`.
+    fn used_template_params(&self, ctx: &BindgenContext) -> Vec<TypeId>
     where
         Self: AsRef<ItemId>,
     {
@@ -156,18 +154,11 @@ pub(crate) trait TemplateParameters: Sized {
         );
 
         let id = *self.as_ref();
-        let (used, unused): (Vec<_>, Vec<_>) = ctx
-            .resolve_item(id)
+        ctx.resolve_item(id)
             .all_template_params(ctx)
             .into_iter()
-            .partition_map(|p| {
-                if ctx.uses_template_parameter(id, p) {
-                    Either::Left(p)
-                } else {
-                    Either::Right(true)
-                }
-            });
-        (used, !unused.is_empty())
+            .filter(|p| ctx.uses_template_parameter(id, *p))
+            .collect()
     }
 }
 
