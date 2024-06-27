@@ -33,20 +33,12 @@ license {
     ],
 }
 
-genrule {
-    name: "copy_bindgen_build_out",
-    srcs: ["out/*"],
-    cmd: "cp $(in) $(genDir)",
-    out: ["host-target.txt"],
-}
-
 rust_library_host {
     name: "libbindgen",
     crate_name: "bindgen",
     cargo_env_compat: true,
-    cargo_pkg_version: "0.69.1",
+    cargo_pkg_version: "0.69.4",
     crate_root: "lib.rs",
-    srcs: [":copy_bindgen_build_out"],
     edition: "2018",
     features: [
         "__cli",
@@ -59,9 +51,9 @@ rust_library_host {
         "libbitflags",
         "libcexpr",
         "libclang_sys",
+        "libitertools",
         "liblazy_static",
         "liblazycell",
-        "libpeeking_take_while",
         "libproc_macro2",
         "libquote",
         "libregex",
