@@ -9,6 +9,7 @@ package {
 
 rust_library_host {
     name: "libbindgen_cmd",
+    host_cross_supported: false,
     crate_name: "bindgen_cmd",
     srcs: ["src/lib.rs"],
     edition: "2018",
