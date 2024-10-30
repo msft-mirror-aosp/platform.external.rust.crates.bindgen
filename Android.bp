@@ -3,6 +3,7 @@
 
 package {
     default_applicable_licenses: ["external_rust_crates_bindgen_license"],
+    default_team: "trendy_team_android_rust",
 }
 
 license {
@@ -12,6 +13,13 @@ license {
     license_text: ["LICENSE"],
 }
 
+genrule {
+    name: "copy_bindgen_build_out",
+    srcs: ["out/*"],
+    cmd: "cp $(in) $(genDir)",
+    out: ["host-target.txt"],
+}
+
 rust_library_host {
     name: "libbindgen",
     host_cross_supported: false,
@@ -19,6 +27,7 @@ rust_library_host {
     cargo_env_compat: true,
     cargo_pkg_version: "0.69.4",
     crate_root: "lib.rs",
+    srcs: [":copy_bindgen_build_out"],
     edition: "2018",
     features: [
         "__cli",
